@@ -1,0 +1,90 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --primary: #0ea5e9;
+  --primary-dark: #0284c7;
+  --teal: #0d9488;
+  --teal-light: #ccfbf1;
+  --blue-light: #e0f2fe;
+  --white: #ffffff;
+  --gray-50: #f8fafc;
+  --gray-100: #f1f5f9;
+  --gray-200: #e2e8f0;
+  --gray-400: #94a3b8;
+  --gray-600: #475569;
+  --gray-800: #1e293b;
+  --red: #ef4444;
+  --orange: #f97316;
+  --yellow: #eab308;
+  --green: #22c55e;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow: 0 4px 16px rgba(0,0,0,0.10);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.13);
+  --radius: 14px;
+  --radius-sm: 8px;
+  --sidebar-w: 240px;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: 'Nunito', sans-serif;
+  background: var(--gray-50);
+  color: var(--gray-800);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Lora', serif;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+p, span, label, input, select, textarea, button, a, li, td, th, small {
+  font-family: 'Nunito', sans-serif;
+  letter-spacing: 0;
+}
+
+button { cursor: pointer; font-family: inherit; }
+input, select, textarea { font-family: inherit; }
+a { text-decoration: none; color: inherit; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 10px; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes iridescenceShift {
+  0% {
+    background-position: 0% 50%;
+    filter: hue-rotate(0deg) saturate(1.1);
+  }
+  50% {
+    background-position: 100% 50%;
+    filter: hue-rotate(24deg) saturate(1.2);
+  }
+  100% {
+    background-position: 0% 50%;
+    filter: hue-rotate(0deg) saturate(1.1);
+  }
+}
+
+.patient-card:hover {
+  box-shadow: 0 6px 24px rgba(0,0,0,0.10) !important;
+  transform: translateY(-2px) !important;
+}
+
+input:focus, select:focus {
+  border-color: #0ea5e9 !important;
+  box-shadow: 0 0 0 3px rgba(14,165,233,0.12) !important;
+  background: white !important;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.05);
+}

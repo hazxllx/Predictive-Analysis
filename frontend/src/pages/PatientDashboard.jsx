@@ -1,0 +1,512 @@
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, ArrowRight, ChevronDown } from "lucide-react";
+import Sidebar from "../components/Sidebar";
+import { useAuth } from "../context/AuthContext";
+import api from "../api/axios";
+import EmptyState from "../components/EmptyState";
+import NotLinkedState from "../components/NotLinkedState";
+
+function displayDate(value) {
+  if (!value) return "No recent update";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "No recent update";
+  return d.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function statusFromLevel(level) {
+  if (level === "Low" || level === "Moderate") return "Good";
+  return "Needs Attention";
+}
+
+function timeGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function heroMessage(level, hasAssessment) {
+  if (!hasAssessment) return "Take your first assessment to see your personalized health score.";
+  if (level === "Critical" || level === "High") return "Let’s focus on small improvements today.";
+  if (level === "Moderate") return "Let’s focus on small improvements today.";
+  return "You're doing well. Keep maintaining your habits.";
+}
+
+export default function PatientDashboard() {
+  const { user } = useAuth();
+
+  const [patient, setPatient] = useState(null);
+  const [latestAssessment, setLatestAssessment] = useState(null);
+  const [assessmentHistory, setAssessmentHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showWhyScore, setShowWhyScore] = useState(false);
+
+  const [runningAssessment, setRunningAssessment] = useState(false);
+  const [assessmentError, setAssessmentError] = useState("");
+
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+
+  const loadDashboard = useCallback(async () => {
+    try {
+      const pid = user?.patient_id;
+      if (!pid) return;
+
+      const { data: patientData } = await api.get("/patients");
+      const own = Array.isArray(patientData) ? patientData.find((p) => p.patient_id === pid) : null;
+      setPatient(own || null);
+
+      const { data: list } = await api.get(`/risk-assessment/user?id=${pid}`);
+      const assessments = Array.isArray(list) ? list : [];
+      const sorted = [...assessments].sort(
+        (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
+      );
+
+      setAssessmentHistory(sorted);
+      setLatestAssessment(sorted[0] || null);
+      setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || null);
+    } catch (err) {
+      console.error("Patient dashboard load error:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
+
+  const runAssessment = async () => {
+    if (runningAssessment) return;
+    if (!user?.patient_id) {
+      setAssessmentError("Unable to run assessment. Missing patient information.");
+      return;
+    }
+
+    setRunningAssessment(true);
+    setAssessmentError("");
+
+    try {
+      const { data } = await api.post("/risk-assessment", { patient_id: user.patient_id });
+
+      setLatestAssessment((prev) => ({
+        ...(prev || {}),
+        risk_score: data?.risk_score ?? prev?.risk_score ?? 0,
+        risk_level: data?.risk_level ?? prev?.risk_level ?? null,
+        recommendations: Array.isArray(data?.recommendations)
+          ? data.recommendations
+          : Array.isArray(prev?.recommendations)
+          ? prev.recommendations
+          : [],
+        confidence: data?.confidence ?? prev?.confidence,
+        createdAt: data?.timestamp || new Date().toISOString(),
+        timestamp: data?.timestamp || new Date().toISOString(),
+      }));
+
+      setLastUpdatedAt(data?.timestamp || new Date().toISOString());
+
+      const { data: list } = await api.get(`/risk-assessment/user?id=${user.patient_id}`);
+      const assessments = Array.isArray(list) ? list : [];
+      const sorted = [...assessments].sort(
+        (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
+      );
+
+      setAssessmentHistory(sorted);
+      setLatestAssessment(sorted[0] || null);
+      setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || data?.timestamp || new Date().toISOString());
+
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
+    } catch (err) {
+      setAssessmentError(err.response?.data?.message || "Assessment could not be completed. Please try again.");
+    } finally {
+      setRunningAssessment(false);
+    }
+  };
+
+  const hasAssessment = Boolean(latestAssessment);
+  const previousAssessment = assessmentHistory.length >= 2 ? assessmentHistory[1] : null;
+  const previousScore =
+    previousAssessment && Number.isFinite(Number(previousAssessment?.risk_score))
+      ? Number(previousAssessment.risk_score)
+      : null;
+  const currentScore =
+    hasAssessment && Number.isFinite(Number(latestAssessment?.risk_score))
+      ? Number(latestAssessment.risk_score)
+      : null;
+  const comparisonDelta =
+    previousScore !== null && currentScore !== null ? currentScore - previousScore : null;
+
+  const score = currentScore;
+  const level = hasAssessment ? latestAssessment?.risk_level || null : null;
+  const status = hasAssessment ? statusFromLevel(level) : "No assessment yet";
+  const greeting = `${timeGreeting()}, ${patient?.name?.split(" ")[0] || user?.name?.split(" ")[0] || "Patient"}`;
+
+  const hasVitals = useMemo(() => {
+    const v = patient?.vitals || {};
+    return Boolean(v.blood_pressure || v.heart_rate || v.blood_glucose);
+  }, [patient]);
+
+  const vitals = useMemo(() => {
+    const v = patient?.vitals || {};
+    return [
+      { key: "bp", icon: Activity, label: "Blood Pressure", value: v.blood_pressure || "No recent record", tone: "#6caeb0" },
+      { key: "hr", icon: Activity, label: "Heart Rate", value: v.heart_rate ? `${v.heart_rate} bpm` : "No recent record", tone: "#74b7c1" },
+      { key: "bg", icon: Activity, label: "Blood Sugar", value: v.blood_glucose ? `${v.blood_glucose} mg/dL` : "No recent record", tone: "#7fc7bb" },
+    ];
+  }, [patient]);
+
+  const scoreInsights = useMemo(() => {
+    if (!hasAssessment) {
+      return {
+        reasons: ["No assessment yet. Your score details will appear after your first assessment."],
+        improvements: ["Start your first assessment to get personalized guidance."],
+        mainFactor: null,
+      };
+    }
+
+    const reasons = [];
+    const improvements = [];
+
+    const bpValue = String(patient?.vitals?.blood_pressure || "");
+    const bpTop = Number(bpValue.split("/")[0]);
+    if (!Number.isNaN(bpTop) && bpTop >= 130) {
+      reasons.push("Blood pressure is slightly elevated.");
+      improvements.push("Reduce salty foods and check blood pressure this week.");
+    }
+
+    const sugarValue = Number(patient?.vitals?.blood_glucose);
+    if (!Number.isNaN(sugarValue) && sugarValue >= 126) {
+      reasons.push("Blood sugar is above the usual range.");
+      improvements.push("Monitor blood sugar regularly and avoid sugary drinks.");
+    }
+
+    const hrValue = Number(patient?.vitals?.heart_rate);
+    if (!Number.isNaN(hrValue) && hrValue > 100) {
+      reasons.push("Heart rate has been a bit higher than expected.");
+      improvements.push("Take short rest breaks and stay hydrated.");
+    }
+
+    if (level === "High" || level === "Critical") reasons.push("Recent risk markers suggest higher short-term risk.");
+    else if (level === "Moderate") reasons.push("Some health markers need closer attention.");
+    else if (level === "Low") reasons.push("Most of your recent markers are in a safer range.");
+
+    const recSource = Array.isArray(latestAssessment?.recommendations) ? latestAssessment.recommendations : [];
+    if (recSource.some((r) => /alcohol/i.test(r))) {
+      reasons.push("Lifestyle habits may be increasing your risk.");
+      improvements.push("Reduce alcohol intake this week.");
+    }
+    if (recSource.some((r) => /exercise|activity|walk/i.test(r))) improvements.push("Walk 15 minutes daily.");
+    if (recSource.some((r) => /sugar|glucose/i.test(r))) improvements.push("Track your meals and reduce sugar portions.");
+
+    if (reasons.length === 0) reasons.push("A few recent readings were outside your healthy target.");
+    if (improvements.length === 0) improvements.push("Walk 15 minutes daily.", "Keep taking medication as advised.");
+
+    const cleanReasons = [...new Set(reasons)].slice(0, 4);
+    const cleanImprovements = [...new Set(improvements)].slice(0, 3);
+
+    return { reasons: cleanReasons, improvements: cleanImprovements, mainFactor: cleanReasons[0] || null };
+  }, [hasAssessment, latestAssessment, patient, level]);
+
+  const updatedLabel = (() => {
+    if (!lastUpdatedAt) return null;
+    const dt = new Date(lastUpdatedAt);
+    if (Number.isNaN(dt.getTime())) return null;
+    const diffMs = Date.now() - dt.getTime();
+    if (diffMs < 2 * 60 * 1000) return "Updated just now";
+    return `Updated ${dt.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}`;
+  })();
+
+  if (loading) {
+    return (
+      <div className="dashboard-shell">
+        <Sidebar />
+        <main className="dashboard-main">
+          <div className="hero-card">Loading your dashboard...</div>
+        </main>
+      </div>
+    );
+  }
+
+  if (!patient) {
+    return (
+      <NotLinkedState
+        primaryText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile →"}
+        onPrimary={runAssessment}
+      />
+    );
+  }
+
+  return (
+    <div className="dashboard-shell" style={{ display: "flex", minHeight: "100vh", background: "#f5f8fb" }}>
+      <style>
+        {`
+          @keyframes scorePulseIn {
+            0% { opacity: 0.92; transform: scale(1.02); }
+            100% { opacity: 1; transform: scale(1); }
+          }
+        `}
+      </style>
+
+      <Sidebar />
+      <main style={{ flex: 1, padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto" }}>
+        {!hasAssessment && (
+          <div style={{ marginBottom: "0.8rem" }}>
+            <EmptyState
+              compact
+              title="No health data yet"
+              description="Take your first assessment to see your health score."
+              ctaText={runningAssessment ? "Analyzing your health..." : "Start Assessment →"}
+              onCta={runAssessment}
+            />
+          </div>
+        )}
+
+        <section
+          style={{
+            background: "#ffffff",
+            borderRadius: "14px",
+            border: "1px solid #e5edf3",
+            boxShadow: "0 2px 10px rgba(10,40,70,0.04)",
+            padding: "0.95rem",
+            marginBottom: "0.85rem",
+            transition: "box-shadow 180ms ease, border-color 180ms ease",
+          }}
+        >
+          <div style={{ fontSize: "0.95rem", color: "#355069", marginBottom: "0.3rem" }}>{greeting}</div>
+          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#1e3a56", marginBottom: "0.15rem", fontFamily: "Lora, serif" }}>
+            Your Health Score
+          </div>
+          <div style={{ fontSize: "0.86rem", color: "#5f7488", marginBottom: "0.75rem" }}>{heroMessage(level, hasAssessment)}</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 330px) 1fr", gap: "0.75rem", alignItems: "start" }}>
+            <div
+              style={{
+                background: "#f8fbfd",
+                border: "1px solid #dce9f2",
+                borderRadius: "12px",
+                padding: "0.85rem",
+                animation: showSuccess ? "scorePulseIn 220ms ease-out" : "none",
+              }}
+            >
+              <div style={{ fontSize: "0.75rem", color: "#5f7488", marginBottom: "0.28rem", fontWeight: 600 }}>
+                Your latest assessment result
+              </div>
+              <div style={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1, color: "#1f4f73" }}>{hasAssessment ? score : "--"}</div>
+
+              <div
+                style={{
+                  marginTop: "0.52rem",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.35rem",
+                  borderRadius: "999px",
+                  padding: "0.2rem 0.65rem",
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  background: status === "Good" ? "#e8f6ef" : hasAssessment ? "#fff3ea" : "#ecf4fb",
+                  color: status === "Good" ? "#1d7a4f" : hasAssessment ? "#a45b22" : "#335d7a",
+                }}
+              >
+                {status}
+              </div>
+
+              {showSuccess && (
+                <div
+                  style={{
+                    marginTop: "0.45rem",
+                    fontSize: "0.76rem",
+                    color: "#166534",
+                    background: "#ecfdf3",
+                    border: "1px solid #ccebd8",
+                    borderRadius: "8px",
+                    padding: "0.28rem 0.45rem",
+                  }}
+                >
+                  Your health score has been updated
+                </div>
+              )}
+
+              <div style={{ fontSize: "0.79rem", color: "#5f7488", marginTop: "0.55rem" }}>
+                {updatedLabel ||
+                  (hasAssessment
+                    ? `You completed your last assessment on ${displayDate(latestAssessment?.createdAt || latestAssessment?.timestamp)}.`
+                    : "You haven’t taken your assessment yet.")}
+              </div>
+
+              {hasAssessment && previousScore !== null && (
+                <div style={{ marginTop: "0.4rem", fontSize: "0.77rem", color: "#48657a" }}>
+                  Previous: {previousScore} → Now: {currentScore}
+                  <span style={{ marginLeft: "0.35rem", fontWeight: 700, color: "#2f5f7f" }}>
+                    {comparisonDelta > 0 ? "↑ improving" : comparisonDelta < 0 ? "↓ needs attention" : "→ no change"}
+                  </span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={runAssessment}
+                disabled={runningAssessment}
+                style={{
+                  marginTop: "0.72rem",
+                  border: "none",
+                  background: hasAssessment ? "#2b6b8d" : "#1f5c84",
+                  color: "#fff",
+                  borderRadius: "999px",
+                  padding: "0.44rem 0.84rem",
+                  fontSize: "0.8rem",
+                  fontWeight: 700,
+                  cursor: runningAssessment ? "not-allowed" : "pointer",
+                  opacity: runningAssessment ? 0.75 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.35rem",
+                }}
+              >
+                {runningAssessment ? "Analyzing your health..." : hasAssessment ? "Run New Assessment" : "Start Assessment"}
+                <ArrowRight size={14} />
+              </button>
+
+              {assessmentError && (
+                <div
+                  style={{
+                    marginTop: "0.45rem",
+                    fontSize: "0.76rem",
+                    color: "#b42318",
+                    background: "#fff4f2",
+                    border: "1px solid #ffd6d1",
+                    borderRadius: "8px",
+                    padding: "0.32rem 0.48rem",
+                  }}
+                >
+                  {assessmentError}
+                </div>
+              )}
+            </div>
+
+            <div style={{ background: "#f9fbfd", border: "1px solid #e3edf4", borderRadius: "12px", overflow: "hidden" }}>
+              <button
+                type="button"
+                onClick={() => setShowWhyScore((prev) => !prev)}
+                style={{
+                  width: "100%",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  padding: "0.8rem 0.9rem",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  color: "#2a4963",
+                }}
+              >
+                <span>Why this score?</span>
+                <ChevronDown
+                  size={16}
+                  style={{
+                    transform: showWhyScore ? "rotate(180deg)" : "rotate(0deg)",
+                    transition: "transform 180ms ease",
+                  }}
+                />
+              </button>
+
+              <div
+                style={{
+                  maxHeight: showWhyScore ? "320px" : "0px",
+                  opacity: showWhyScore ? 1 : 0,
+                  transition: "max-height 180ms ease, opacity 180ms ease",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    borderTop: "1px solid #e3edf4",
+                    padding: showWhyScore ? "0.8rem 0.9rem" : "0 0.9rem",
+                    transition: "padding 180ms ease",
+                  }}
+                >
+                  {scoreInsights.mainFactor && (
+                    <div
+                      style={{
+                        marginBottom: "0.65rem",
+                        background: "#edf6fb",
+                        border: "1px solid #d6e9f4",
+                        borderRadius: "10px",
+                        padding: "0.5rem 0.65rem",
+                      }}
+                    >
+                      <div style={{ fontSize: "0.72rem", color: "#537089", marginBottom: "0.2rem", fontWeight: 600 }}>
+                        Main factor
+                      </div>
+                      <div style={{ fontSize: "0.83rem", color: "#24465f" }}>{scoreInsights.mainFactor}</div>
+                    </div>
+                  )}
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem" }}>
+                    <div>
+                      <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#355069", marginBottom: "0.35rem" }}>
+                        What affected your score
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: "1rem", color: "#516b7f", fontSize: "0.8rem", lineHeight: 1.5 }}>
+                        {scoreInsights.reasons.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div>
+                      <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#355069", marginBottom: "0.35rem" }}>
+                        What you can improve
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: "1rem", color: "#516b7f", fontSize: "0.8rem", lineHeight: 1.5 }}>
+                        {scoreInsights.improvements.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {hasVitals ? (
+          <section
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "0.7rem",
+              marginBottom: "0.85rem",
+            }}
+          >
+            {vitals.map((v) => (
+              <article
+                key={v.key}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #e4edf4",
+                  borderRadius: "12px",
+                  padding: "0.8rem",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "0.45rem", marginBottom: "0.25rem" }}>
+                  <v.icon size={14} color={v.tone} />
+                  <div style={{ fontSize: "0.8rem", color: "#557086" }}>{v.label}</div>
+                </div>
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#223f57" }}>{v.value}</div>
+              </article>
+            ))}
+          </section>
+        ) : (
+          <div style={{ marginBottom: "0.85rem" }}>
+            <EmptyState compact title="No vitals yet" description="Your health data will appear here once recorded." />
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
