@@ -1,4 +1,0 @@
-- [x] Update backend CORS configuration in `backend/server.js` for Railway compatibility (`origin: "*"`).
-- [x] Validate backend startup with `npm start` from `backend/`.
-- [ ] Verify startup log confirms dynamic `PORT` usage and no runtime errors.
-- [ ] Resolve runtime env mismatch: `MONGODB_URI` expected by `backend/config/db.js` is currently undefined in local `.env`.

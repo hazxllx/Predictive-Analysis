@@ -118,7 +118,7 @@ export default function PatientDashboard() {
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
     } catch (err) {
-      setAssessmentError(err.response?.data?.message || "Assessment could not be completed. Please try again.");
+      setAssessmentError(err.response?.data?.message || "Something went wrong. Please try again.");
     } finally {
       setRunningAssessment(false);
     }
@@ -231,7 +231,9 @@ export default function PatientDashboard() {
   if (!patient) {
     return (
       <NotLinkedState
-        primaryText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile →"}
+        title="You're not connected yet"
+        description="Start assessment to create your profile"
+        primaryText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
         onPrimary={runAssessment}
       />
     );
@@ -254,9 +256,9 @@ export default function PatientDashboard() {
           <div style={{ marginBottom: "0.8rem" }}>
             <EmptyState
               compact
-              title="No health data yet"
-              description="Take your first assessment to see your health score."
-              ctaText={runningAssessment ? "Analyzing your health..." : "Start Assessment →"}
+              title="You're not connected yet"
+              description="Start assessment to create your profile"
+              ctaText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
               onCta={runAssessment}
             />
           </div>
