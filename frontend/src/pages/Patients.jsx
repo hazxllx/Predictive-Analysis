@@ -5,6 +5,8 @@ import api from "../api/axios";
 import Sidebar from "../components/Sidebar";
 import { useAuth } from "../context/AuthContext";
 import "./Patients.css";
+import { formatDateTime } from "../utils/formatDateTime";
+import { fetchWithCache } from "../api/cachedFetch";
 
 const RISK_CLASS_MAP = {
   Critical: "patient-registry__badge--critical",
@@ -32,7 +34,14 @@ export default function Patients() {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data: patientResponse } = await api.get("/patients");
+        const { data: patientResponse } = await fetchWithCache({
+          key: ["patients"],
+          fetcher: async () => {
+            const { data } = await api.get("/patients");
+            return data;
+          },
+        });
+
         const patientList = Array.isArray(patientResponse?.data)
           ? patientResponse.data
           : Array.isArray(patientResponse)
@@ -42,22 +51,31 @@ export default function Patients() {
         setDataSource(patientResponse?.source === "fallback" ? "fallback" : "pms");
         setPatients(patientList);
 
-        const assessmentMap = {};
-        await Promise.all(
-          patientList.map(async (patient) => {
-            try {
-              const patientId = patient.patient_id;
-              if (!patientId) return;
+        const { data: recordsData } = await fetchWithCache({
+          key: ["health-records"],
+          fetcher: async () => {
+            const { data } = await api.get("/api/v1/external/health-records");
+            return data;
+          },
+        });
 
-              const { data } = await api.get(`/risk-assessment/user?id=${patientId}`);
-              if (Array.isArray(data) && data.length > 0) {
-                assessmentMap[patientId] = data[0];
-              }
-            } catch {
-              // No assessment yet for this patient.
-            }
-          })
-        );
+        const records = Array.isArray(recordsData?.data?.records)
+          ? recordsData.data.records
+          : Array.isArray(recordsData?.data?.healthRecords)
+          ? recordsData.data.healthRecords
+          : Array.isArray(recordsData?.data)
+          ? recordsData.data
+          : Array.isArray(recordsData)
+          ? recordsData
+          : [];
+
+        const assessmentMap = {};
+        records.forEach((record) => {
+          const patientId = String(record?.patient_id || record?.id || "");
+          if (!patientId) return;
+          if (assessmentMap[patientId]) return;
+          assessmentMap[patientId] = record;
+        });
 
         setAssessments(assessmentMap);
       } catch (error) {
@@ -223,6 +241,18 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
         ) : (
           <span className="patient-registry-card__conditions-empty">No conditions on record</span>
         )}
+      </div>
+
+      <div
+        style={{
+          marginTop: "6px",
+          marginBottom: "2px",
+          fontSize: "12px",
+          color: "#6b8799",
+          textAlign: "left",
+        }}
+      >
+        Last Visit: {formatDateTime(patient?.last_visit_date, "N/A")}
       </div>
 
       <div className="patient-registry-card__lifestyle">

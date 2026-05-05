@@ -7,6 +7,8 @@ import RiskBadge from "../components/RiskBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
 import ResultTabs from "../components/ResultTabs";
 import api from "../api/axios";
+import { formatDateTime } from "../utils/formatDateTime";
+import { fetchWithCache } from "../api/cachedFetch";
 
 const PANEL_KEYS = {
   patientInfo: "patientInfo",
@@ -48,10 +50,16 @@ export default function PatientDetail() {
 
     const load = async () => {
       try {
-        const res = await api.get(`/patients/${id}`);
-        console.log("FULL RESPONSE:", res.data);
+        const { data: patientResponse } = await fetchWithCache({
+          key: ["patient", id],
+          fetcher: async () => {
+            const res = await api.get(`/patients/${id}`);
+            return res.data;
+          },
+        });
+        console.log("FULL RESPONSE:", patientResponse);
 
-        const payload = res?.data?.data;
+        const payload = patientResponse?.data;
 
         if (!payload || !payload.patient_id || !payload.name) {
           throw new Error("Invalid response shape");
@@ -325,6 +333,8 @@ export default function PatientDetail() {
                             })
                           : "N/A",
                       ],
+                      ["Last Visit", formatDateTime(patient?.last_visit_date, "N/A")],
+                      ["Attending Physician", patient?.attending_physician || "N/A"],
                       ["Medications", patient?.current_medications?.join(", ") || "None"],
                     ]}
                   />

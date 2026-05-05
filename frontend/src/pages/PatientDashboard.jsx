@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
 import EmptyState from "../components/EmptyState";
 import NotLinkedState from "../components/NotLinkedState";
+import { fetchWithCache } from "../api/cachedFetch";
 
 function displayDate(value) {
   if (!value) return "No recent update";
@@ -32,6 +33,24 @@ function heroMessage(level, hasAssessment) {
   return "You're doing well. Keep maintaining your habits.";
 }
 
+function normalizeAssessment(item) {
+  return {
+    risk_score: Number(item?.risk_score ?? item?.score ?? 0) || 0,
+    risk_level: item?.risk_level || "Unknown",
+    recommendations: Array.isArray(item?.recommendations) ? item.recommendations : [],
+    createdAt: item?.createdAt || item?.created_at || item?.timestamp || item?.date || null,
+    timestamp: item?.timestamp || item?.createdAt || item?.created_at || item?.date || null,
+  };
+}
+
+function extractHealthRecords(data) {
+  if (Array.isArray(data?.data?.records)) return data.data.records;
+  if (Array.isArray(data?.data?.healthRecords)) return data.data.healthRecords;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data)) return data;
+  return [];
+}
+
 export default function PatientDashboard() {
   const { user } = useAuth();
 
@@ -52,13 +71,20 @@ export default function PatientDashboard() {
   const [appointmentActionLoading, setAppointmentActionLoading] = useState(false);
   const [resolvedPatientId, setResolvedPatientId] = useState(null);
   const [linkInfo, setLinkInfo] = useState(null);
+  const [dashboardError, setDashboardError] = useState("");
 
   const loadAppointments = useCallback(async () => {
     try {
       const pid = resolvedPatientId || user?.patient_id;
       if (!pid) return;
       setAppointmentsLoading(true);
-      const { data } = await api.get(`/api/v1/appointments/patient/${pid}`);
+      const { data } = await fetchWithCache({
+        key: ["appointments", pid],
+        fetcher: async () => {
+          const { data } = await api.get(`/api/v1/appointments/patient/${pid}`);
+          return data;
+        },
+      });
       setAppointments(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Patient appointments load error:", err);
@@ -85,7 +111,16 @@ export default function PatientDashboard() {
     try {
       if (!user) return;
 
-      const { data: meResponse } = await api.get("/patients/me");
+      setDashboardError("");
+      setAssessmentError("");
+
+      const { data: meResponse } = await fetchWithCache({
+        key: ["patients-me", user?._id || user?.email || "current"],
+        fetcher: async () => {
+          const { data } = await api.get("/patients/me");
+          return data;
+        },
+      });
       console.log("[PatientDashboard] /patients/me response:", meResponse);
 
       if (meResponse?.linked && meResponse?.data) {
@@ -95,15 +130,35 @@ export default function PatientDashboard() {
         setLinkInfo(null);
 
         if (pid) {
-          const { data: list } = await api.get(`/risk-assessment/user?id=${pid}`);
-          const assessments = Array.isArray(list) ? list : [];
-          const sorted = [...assessments].sort(
-            (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
-          );
+          try {
+            const { data } = await fetchWithCache({
+              key: ["health-records"],
+              fetcher: async () => {
+                const { data } = await api.get("/api/v1/external/health-records");
+                return data;
+              },
+            });
+            const records = extractHealthRecords(data);
+            const assessments = records
+              .filter((item) => String(item?.patient_id || item?.id || "") === String(pid))
+              .map(normalizeAssessment);
 
-          setAssessmentHistory(sorted);
-          setLatestAssessment(sorted[0] || null);
-          setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || null);
+            const sorted = [...assessments].sort(
+              (a, b) => new Date(b.createdAt || b.timestamp || 0) - new Date(a.createdAt || a.timestamp || 0)
+            );
+
+            setAssessmentHistory(sorted);
+            setLatestAssessment(sorted[0] || null);
+            setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || null);
+          } catch (err) {
+            if (err?.response?.status === 404) {
+              setAssessmentHistory([]);
+              setLatestAssessment(null);
+              setLastUpdatedAt(null);
+            } else {
+              throw err;
+            }
+          }
         } else {
           setAssessmentHistory([]);
           setLatestAssessment(null);
@@ -113,41 +168,32 @@ export default function PatientDashboard() {
         return;
       }
 
-      if (meResponse?.multipleMatches) {
-        setPatient(null);
-        setResolvedPatientId(null);
-        setAssessmentHistory([]);
-        setLatestAssessment(null);
-        setLastUpdatedAt(null);
-        setLinkInfo({
-          type: "multiple",
-          message:
-            "Multiple PMS profiles matched your name. Please contact support to link the correct patient profile.",
-        });
-        return;
-      }
-
       setPatient(null);
       setResolvedPatientId(null);
       setAssessmentHistory([]);
       setLatestAssessment(null);
       setLastUpdatedAt(null);
-      setLinkInfo({
-        type: "none",
-        message: "No matching PMS profile found for your account name yet.",
-      });
 
-      const { data: list } = await api.get(`/risk-assessment/user?id=${user?.patient_id}`);
-      const assessments = Array.isArray(list) ? list : [];
-      const sorted = [...assessments].sort(
-        (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
-      );
-
-      setAssessmentHistory(sorted);
-      setLatestAssessment(sorted[0] || null);
-      setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || null);
+      if (meResponse?.multipleMatches) {
+        setLinkInfo({
+          type: "multiple",
+          message:
+            "Multiple PMS profiles matched your name. Please contact support to link the correct patient profile.",
+        });
+      } else {
+        setLinkInfo({
+          type: "none",
+          message: "No matching PMS profile found for your account name yet.",
+        });
+      }
     } catch (err) {
       console.error("Patient dashboard load error:", err);
+      setDashboardError(err.response?.data?.message || "Something went wrong. Please try again.");
+      setPatient(null);
+      setResolvedPatientId(null);
+      setAssessmentHistory([]);
+      setLatestAssessment(null);
+      setLastUpdatedAt(null);
     } finally {
       setLoading(false);
     }
@@ -191,15 +237,36 @@ export default function PatientDashboard() {
 
       setLastUpdatedAt(data?.timestamp || new Date().toISOString());
 
-      const { data: list } = await api.get(`/risk-assessment/user?id=${pid}`);
-      const assessments = Array.isArray(list) ? list : [];
-      const sorted = [...assessments].sort(
-        (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
-      );
+      try {
+        const { data: recordsData } = await fetchWithCache({
+          key: ["health-records"],
+          force: true,
+          fetcher: async () => {
+            const { data } = await api.get("/api/v1/external/health-records");
+            return data;
+          },
+        });
+        const records = extractHealthRecords(recordsData);
+        const assessments = records
+          .filter((item) => String(item?.patient_id || item?.id || "") === String(pid))
+          .map(normalizeAssessment);
 
-      setAssessmentHistory(sorted);
-      setLatestAssessment(sorted[0] || null);
-      setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || data?.timestamp || new Date().toISOString());
+        const sorted = [...assessments].sort(
+          (a, b) => new Date(b.createdAt || b.timestamp || 0) - new Date(a.createdAt || a.timestamp || 0)
+        );
+
+        setAssessmentHistory(sorted);
+        setLatestAssessment(sorted[0] || null);
+        setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || data?.timestamp || new Date().toISOString());
+      } catch (err) {
+        if (err?.response?.status === 404) {
+          setAssessmentHistory([]);
+          setLatestAssessment(null);
+          setLastUpdatedAt(null);
+        } else {
+          throw err;
+        }
+      }
 
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
@@ -349,6 +416,17 @@ export default function PatientDashboard() {
     );
   }
 
+  if (dashboardError) {
+    return (
+      <div className="dashboard-shell">
+        <Sidebar />
+        <main className="dashboard-main">
+          <div className="hero-card">{dashboardError}</div>
+        </main>
+      </div>
+    );
+  }
+
   if (!patient) {
     return (
       <NotLinkedState
@@ -357,6 +435,51 @@ export default function PatientDashboard() {
         primaryText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
         onPrimary={runAssessment}
       />
+    );
+  }
+
+  if (!hasAssessment) {
+    return (
+      <div className="dashboard-shell" style={{ display: "flex", minHeight: "100vh", background: "#f5f8fb" }}>
+        <Sidebar />
+        <main style={{ flex: 1, padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto" }}>
+          <section
+            style={{
+              background: "#ffffff",
+              borderRadius: "14px",
+              border: "1px solid #e5edf3",
+              boxShadow: "0 2px 10px rgba(10,40,70,0.04)",
+              padding: "0.95rem",
+              marginBottom: "0.85rem",
+              transition: "box-shadow 180ms ease, border-color 180ms ease",
+            }}
+          >
+            <div style={{ fontSize: "0.95rem", color: "#355069", marginBottom: "0.3rem" }}>{greeting}</div>
+            <div
+              style={{
+                fontSize: "1.2rem",
+                fontWeight: 700,
+                color: "#1e3a56",
+                marginBottom: "0.15rem",
+                fontFamily: "Lora, serif",
+              }}
+            >
+              Your Health Score
+            </div>
+            <div style={{ fontSize: "0.86rem", color: "#5f7488", marginBottom: "0.75rem" }}>
+              {heroMessage(level, hasAssessment)}
+            </div>
+
+            <EmptyState
+              compact
+              title="No progress yet"
+              description="Start assessment to create your profile"
+              ctaText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
+              onCta={runAssessment}
+            />
+          </section>
+        </main>
+      </div>
     );
   }
 
@@ -373,18 +496,6 @@ export default function PatientDashboard() {
 
       <Sidebar />
       <main style={{ flex: 1, padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto" }}>
-        {!hasAssessment && (
-          <div style={{ marginBottom: "0.8rem" }}>
-            <EmptyState
-              compact
-              title="You're not connected yet"
-              description="Start assessment to create your profile"
-              ctaText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
-              onCta={runAssessment}
-            />
-          </div>
-        )}
-
         <section
           style={{
             background: "#ffffff",

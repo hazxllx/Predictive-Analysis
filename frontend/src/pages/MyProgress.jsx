@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
 import EmptyState from "../components/EmptyState";
 import NotLinkedState from "../components/NotLinkedState";
+import { fetchWithCache } from "../api/cachedFetch";
 
 function parseDate(value) {
   const d = new Date(value);
@@ -80,13 +81,20 @@ export default function MyProgress() {
   const [assessments, setAssessments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [linkInfo, setLinkInfo] = useState(null);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     const load = async () => {
       try {
         if (!user) return;
 
-        const { data: meResponse } = await api.get("/patients/me");
+        const { data: meResponse } = await fetchWithCache({
+          key: ["patients-me", user?._id || user?.email || "current"],
+          fetcher: async () => {
+            const { data } = await api.get("/patients/me");
+            return data;
+          },
+        });
         console.log("[MyProgress] /patients/me response:", meResponse);
 
         if (!(meResponse?.linked && meResponse?.data)) {
@@ -118,17 +126,44 @@ export default function MyProgress() {
           return;
         }
 
-        const { data } = await api.get(`/risk-assessment/user?id=${resolvedPatientId}`);
-        const list = Array.isArray(data) ? data : [];
+        try {
+          const { data } = await fetchWithCache({
+            key: ["health-records"],
+            fetcher: async () => {
+              const { data } = await api.get("/api/v1/external/health-records");
+              return data;
+            },
+          });
+          const records = Array.isArray(data?.data?.records)
+            ? data.data.records
+            : Array.isArray(data?.data?.healthRecords)
+            ? data.data.healthRecords
+            : Array.isArray(data?.data)
+            ? data.data
+            : Array.isArray(data)
+            ? data
+            : [];
 
-        const normalizedReal = list
-          .map(normalizeAssessment)
-          .filter((item) => parseDate(item.date))
-          .sort((a, b) => parseDate(a.date) - parseDate(b.date));
+          const filtered = records.filter(
+            (item) => String(item?.patient_id || item?.id || "") === String(resolvedPatientId)
+          );
 
-        setAssessments(normalizedReal);
+          const normalizedReal = filtered
+            .map(normalizeAssessment)
+            .filter((item) => parseDate(item.date))
+            .sort((a, b) => parseDate(a.date) - parseDate(b.date));
+
+          setAssessments(normalizedReal);
+        } catch (err) {
+          if (err?.response?.status === 404) {
+            setAssessments([]);
+          } else {
+            throw err;
+          }
+        }
       } catch (err) {
         console.error("MyProgress load error:", err);
+        setLoadError(err?.response?.data?.message || "Something went wrong. Please try again.");
         setAssessments([]);
       } finally {
         setLoading(false);
@@ -218,6 +253,17 @@ export default function MyProgress() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div style={styles.layout}>
+        <Sidebar />
+        <main style={styles.main}>
+          <section style={styles.surface}>{loadError}</section>
+        </main>
+      </div>
+    );
+  }
+
   if (!patient) {
     return (
       <NotLinkedState
@@ -240,13 +286,15 @@ export default function MyProgress() {
           <p style={styles.subtitle}>See your progress, what changed, and what to do next</p>
         </header>
 
-        <section style={styles.summaryCard}>
-          <div>
-            <h2 style={styles.summaryTitle}>{summary.title}</h2>
-            <p style={styles.summarySub}>{summary.subtitle}</p>
-            <p style={styles.summaryDelta}>{summary.change}</p>
-          </div>
-        </section>
+        {hasAssessments && (
+          <section style={styles.summaryCard}>
+            <div>
+              <h2 style={styles.summaryTitle}>{summary.title}</h2>
+              <p style={styles.summarySub}>{summary.subtitle}</p>
+              <p style={styles.summaryDelta}>{summary.change}</p>
+            </div>
+          </section>
+        )}
 
         {!hasAssessments ? (
           <EmptyState
