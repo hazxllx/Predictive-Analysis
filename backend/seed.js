@@ -2,11 +2,47 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const User = require("./models/User");
+const { fetchAllPatients } = require("./services/pmsService");
+
+function pickPatientId(record) {
+  return (
+    record?.patient_id ||
+    record?.patientId ||
+    record?.id ||
+    record?._id ||
+    null
+  );
+}
+
+function pickPatientName(record) {
+  return (
+    record?.name ||
+    [record?.firstName, record?.middleName, record?.lastName].filter(Boolean).join(" ").trim() ||
+    "PMS Patient"
+  );
+}
 
 const seed = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI || process.env.MONGODB_URI);
     console.log("✅ Connected to MongoDB");
+
+    let pmsPatientId = "PH001";
+    let pmsPatientName = "Juan Dela Cruz";
+
+    try {
+      const patients = await fetchAllPatients();
+      if (Array.isArray(patients) && patients.length > 0) {
+        const first = patients[0];
+        pmsPatientId = pickPatientId(first) || pmsPatientId;
+        pmsPatientName = pickPatientName(first) || pmsPatientName;
+        console.log(`✅ PMS patient found: ${pmsPatientName} (${pmsPatientId})`);
+      } else {
+        console.log("⚠️ PMS returned no patients, using fallback patient seed values");
+      }
+    } catch (pmsErr) {
+      console.log("⚠️ PMS fetch failed during seed, using fallback patient seed values");
+    }
 
     await User.deleteMany({
       email: {
@@ -21,11 +57,11 @@ const seed = async () => {
 
     await User.collection.insertMany([
       {
-        name: "Juan Dela Cruz",
+        name: pmsPatientName,
         email: "patient@pulseprophet.com",
         password: patientPass,
         role: "patient",
-        patient_id: "PH001",
+        patient_id: String(pmsPatientId),
         createdAt: new Date(),
         updatedAt: new Date(),
       },

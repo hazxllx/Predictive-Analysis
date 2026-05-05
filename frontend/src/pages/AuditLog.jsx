@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
+import { normalizePatients } from "../utils/normalizePatients";
 
 /* ─── Date helpers ────────────────────────────────────────────── */
 function ymd(d) {
@@ -386,17 +387,18 @@ export default function AuditLog() {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data: patients } = await api.get("/patients");
+        const res = await api.get("/patients");
+        const patients = normalizePatients(res);
         const pMap = {};
-        patients.forEach((p) => { pMap[p.patient_id] = p; });
+        patients?.forEach((p) => { pMap[p.patient_id] = p; });
         setPatientMap(pMap);
 
         const allRows = [];
         await Promise.all(
-          patients.map(async (p) => {
+          patients?.map(async (p) => {
             try {
               const { data: assessments } = await api.get(`/risk-assessment/user?id=${p.patient_id}`);
-              assessments.forEach((a) => {
+              (Array.isArray(assessments) ? assessments : []).forEach((a) => {
                 allRows.push({
                   logId: a._id || `${p.patient_id}-${a.timestamp || a.createdAt}`,
                   patientId: p.patient_id,

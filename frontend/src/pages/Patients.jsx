@@ -27,21 +27,31 @@ export default function Patients() {
   const [assessments, setAssessments] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [dataSource, setDataSource] = useState("pms");
 
   useEffect(() => {
     const load = async () => {
       try {
         const { data: patientResponse } = await api.get("/patients");
-        const patientList = Array.isArray(patientResponse) ? patientResponse : [];
+        const patientList = Array.isArray(patientResponse?.data)
+          ? patientResponse.data
+          : Array.isArray(patientResponse)
+          ? patientResponse
+          : [];
+
+        setDataSource(patientResponse?.source === "fallback" ? "fallback" : "pms");
         setPatients(patientList);
 
         const assessmentMap = {};
         await Promise.all(
           patientList.map(async (patient) => {
             try {
-              const { data } = await api.get(`/risk-assessment/user?id=${patient.patient_id}`);
+              const patientId = patient.patient_id;
+              if (!patientId) return;
+
+              const { data } = await api.get(`/risk-assessment/user?id=${patientId}`);
               if (Array.isArray(data) && data.length > 0) {
-                assessmentMap[patient.patient_id] = data[0];
+                assessmentMap[patientId] = data[0];
               }
             } catch {
               // No assessment yet for this patient.
@@ -71,12 +81,22 @@ export default function Patients() {
     });
   }, [patients, search]);
 
-  const openPatient = (patientId, assessed) => {
+  const openPatient = (patient, assessed) => {
+    console.log("CLICKED PATIENT:", patient);
+    const patientId = patient?.patient_id;
+    if (!patientId) return;
+
     if (user?.role === "admin") {
       navigate(`/admin/patient/${patientId}`);
       return;
     }
-    navigate(assessed ? `/patients/${patientId}` : `/patients/${patientId}/assessment`);
+
+    if (assessed) {
+      navigate(`/patients/${patientId}`);
+      return;
+    }
+
+    navigate(`/patients/${patientId}/assessment`);
   };
 
   return (
@@ -107,19 +127,54 @@ export default function Patients() {
 
         {loading ? (
           <div className="patient-registry-page__empty">Loading patients...</div>
-        ) : filteredPatients.length === 0 ? (
-          <div className="patient-registry-page__empty">No patients found.</div>
         ) : (
-          <section className="patient-registry-grid">
-            {filteredPatients.map((patient) => (
-              <PatientRegistryCard
-                key={patient.patient_id}
-                patient={patient}
-                assessment={assessments[patient.patient_id]}
-                onOpen={(assessed) => openPatient(patient.patient_id, assessed)}
-              />
-            ))}
-          </section>
+          <>
+            {dataSource === "fallback" && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span
+                  style={{
+                    background: "#fef3c7",
+                    color: "#92400e",
+                    borderRadius: "999px",
+                    padding: "4px 10px",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                  }}
+                >
+                  Using fallback data
+                </span>
+                <span style={{ color: "#7c6f52", fontSize: "13px" }}>
+                  PMS temporarily unavailable — showing fallback data
+                </span>
+              </div>
+            )}
+
+            {filteredPatients.length === 0 ? (
+              <div className="patient-registry-page__empty">No patients found.</div>
+            ) : (
+              <section className="patient-registry-grid">
+                {filteredPatients.map((patient) => {
+                  const patientId = patient.patient_id;
+                  return (
+                    <PatientRegistryCard
+                      key={patientId}
+                      patient={patient}
+                      assessment={assessments[patientId]}
+                      onOpen={(assessed) => openPatient(patient, assessed)}
+                    />
+                  );
+                })}
+              </section>
+            )}
+          </>
         )}
       </main>
     </div>
@@ -130,9 +185,12 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
   const conditions = getConditions(patient);
   const lifestyleIndicators = getLifestyleIndicators(patient);
   const initials = getInitials(patient.name);
-  const riskScore = formatRiskScore(assessment?.risk_score);
-  const assessed = Boolean(assessment?.risk_level) && riskScore !== null;
-  const riskLevel = assessment?.risk_level || "Not assessed";
+
+  const effectiveRiskLevel = patient?.risk_level || assessment?.risk_level || null;
+  const effectiveRiskScore = patient?.riskScore ?? patient?.risk_score ?? assessment?.risk_score;
+  const riskScore = formatRiskScore(effectiveRiskScore);
+  const assessed = Boolean(effectiveRiskLevel) && riskScore !== null;
+  const riskLevel = effectiveRiskLevel || "Not assessed";
   const actionLabel = assessed ? "View Result" : "Assess";
 
   return (
@@ -211,6 +269,17 @@ function getInitials(name = "") {
 }
 
 function getConditions(patient) {
+  const mapped = Array.isArray(patient?.patient_record)
+    ? patient.patient_record
+        .map((c) => String(c || "").trim())
+        .filter(Boolean)
+        .map((c) => c.charAt(0).toUpperCase() + c.slice(1))
+    : [];
+
+  if (mapped.length > 0) {
+    return [...new Set(mapped)].slice(0, 3);
+  }
+
   const history = patient?.medical_history || {};
   const chips = [];
 

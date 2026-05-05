@@ -4,7 +4,7 @@ const bcrypt = require("bcryptjs");
 const { protect, adminOnly } = require("../middleware/auth");
 const User = require("../models/User");
 const Assessment = require("../models/Assessment");
-const { getAllPatients } = require("../services/pmsData");
+const { fetchAllPatients } = require("../services/pmsService");
 
 // All admin routes require authentication + admin role
 router.use(protect, adminOnly);
@@ -12,8 +12,23 @@ router.use(protect, adminOnly);
 // GET /admin/users — list all users
 router.get("/users", async (req, res) => {
   try {
-    const users = await User.find({}).select("-password").sort({ createdAt: -1 });
-    res.json(users);
+    const users = await User.find({}).select("-password").sort({ createdAt: -1 }).lean();
+    const pmsPatients = await fetchAllPatients();
+    const pmsMap = new Map(pmsPatients.map((p) => [String(p.id), p]));
+
+    const merged = users.map((user) => {
+      if (user.role !== "patient") return user;
+
+      const pms = pmsMap.get(String(user.patient_id));
+
+      return {
+        ...user,
+        displayName: pms?.name || user.name,
+        pmsLinked: !!pms,
+      };
+    });
+
+    res.json(merged);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -105,7 +120,7 @@ router.get("/stats", async (req, res) => {
     const totalPatientUsers = await User.countDocuments({ role: "patient" });
     const totalAdmins = await User.countDocuments({ role: "admin" });
     const totalAssessments = await Assessment.countDocuments();
-    const totalPatients = getAllPatients().length;
+    const totalPatients = (await fetchAllPatients()).length;
 
     res.json({
       totalUsers,

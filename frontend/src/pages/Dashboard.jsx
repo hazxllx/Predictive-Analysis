@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
+import { normalizePatients } from "../utils/normalizePatients";
 
 /* ─── SVG Icons (inline, no library needed) ───────────────────── */
 const IconUsers = () => (
@@ -99,12 +100,13 @@ export default function Dashboard() {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data: pList } = await api.get("/patients");
+        const res = await api.get("/patients");
+        const pList = normalizePatients(res);
         setPatients(pList);
 
         const allAssessments = [];
         await Promise.all(
-          pList.map(async (p) => {
+          pList?.map(async (p) => {
             try {
               const { data } = await api.get(`/risk-assessment/user?id=${p.patient_id}`);
               if (Array.isArray(data)) {
@@ -131,13 +133,13 @@ export default function Dashboard() {
 
   const patientMap = useMemo(() => {
     const map = {};
-    patients.forEach((p) => { map[p.patient_id] = p; });
+    patients?.forEach((p) => { map[p.patient_id] = p; });
     return map;
   }, [patients]);
 
   const latestByPatient = useMemo(() => {
     const map = {};
-    assessments.forEach((a) => {
+    assessments?.forEach((a) => {
       if (!map[a.patient_id]) map[a.patient_id] = a;
     });
     return map;
@@ -193,7 +195,7 @@ export default function Dashboard() {
 
   /* PMS patients list — filtered by search */
   const filteredPatients = useMemo(() => {
-    return patients.filter((p) => {
+    return patients?.filter((p) => {
       if (!query) return true;
       return (
         (p.name || "").toLowerCase().includes(query) ||

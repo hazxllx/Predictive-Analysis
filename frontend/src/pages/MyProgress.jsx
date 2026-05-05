@@ -79,19 +79,46 @@ export default function MyProgress() {
   const [patient, setPatient] = useState(null);
   const [assessments, setAssessments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [linkInfo, setLinkInfo] = useState(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        if (!user?.patient_id) return;
+        if (!user) return;
 
-        const { data: patientData } = await api.get("/patients");
-        const own = Array.isArray(patientData)
-          ? patientData.find((p) => p.patient_id === user.patient_id)
-          : null;
-        setPatient(own || null);
+        const { data: meResponse } = await api.get("/patients/me");
+        console.log("[MyProgress] /patients/me response:", meResponse);
 
-        const { data } = await api.get(`/risk-assessment/user?id=${user.patient_id}`);
+        if (!(meResponse?.linked && meResponse?.data)) {
+          setPatient(null);
+          setAssessments([]);
+
+          if (meResponse?.multipleMatches) {
+            setLinkInfo({
+              type: "multiple",
+              message:
+                "Multiple PMS profiles matched your name. Please contact support to link the correct patient profile.",
+            });
+          } else {
+            setLinkInfo({
+              type: "none",
+              message: "No matching PMS profile found for your account name yet.",
+            });
+          }
+          return;
+        }
+
+        setLinkInfo(null);
+        const resolvedPatient = meResponse.data;
+        const resolvedPatientId = resolvedPatient.id || resolvedPatient.patient_id || user?.patient_id || null;
+        setPatient(resolvedPatient);
+
+        if (!resolvedPatientId) {
+          setAssessments([]);
+          return;
+        }
+
+        const { data } = await api.get(`/risk-assessment/user?id=${resolvedPatientId}`);
         const list = Array.isArray(data) ? data : [];
 
         const normalizedReal = list
@@ -194,6 +221,8 @@ export default function MyProgress() {
   if (!patient) {
     return (
       <NotLinkedState
+        title={linkInfo?.type === "multiple" ? "Multiple profiles found" : "You're not connected yet"}
+        description={linkInfo?.message || "Start assessment to create your profile"}
         primaryText="Start assessment to create your profile →"
         onPrimary={() => (window.location.href = "/assessment")}
       />

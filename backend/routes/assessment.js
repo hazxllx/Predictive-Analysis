@@ -1,107 +1,135 @@
 /**
- * Description:
- * Handles patient risk-assessment routes and assessment history retrieval.
- * Part of Predictive Analysis Subsystem.
+ * Predictive Analysis routes
+ * - Patient-triggered risk assessment (JWT protected)
+ * - PMS-triggered risk assessment (API key protected)
+ * - Authenticated user history
  */
 
 const express = require("express");
 const router = express.Router();
-const { protect } = require("../middleware/auth");
-const { getPatientById } = require("../services/pmsData");
-const { computeRiskScore } = require("../services/scoringService");
+
+const { requireAuth, requireApiKey } = require("../middleware/auth");
+const { pmsRateLimiter } = require("../middleware/rateLimiter");
+const { pmsRequestLogger } = require("../middleware/requestLogger");
+const { scorePatient } = require("../services/scoring");
+const { runPmsAssessment } = require("../controllers/pmsAssessmentController");
 const Assessment = require("../models/Assessment");
 
-/**
- * Description:
- * Executes risk assessment for a patient and stores the result.
- *
- * Inputs:
- * - patient_id (from request body)
- * - patient clinical/lifestyle data (resolved from PMS service)
- *
- * Output:
- * - risk_score
- * - risk_level
- * - confidence
- * - recommendations
- * - persisted assessment metadata
- */
-// POST /risk-assessment
-router.post("/", protect, async (req, res) => {
+// POST /api/v1/predictive-analysis/risk-assessment
+router.post("/risk-assessment", requireAuth, async (req, res) => {
   try {
-    const { patient_id } = req.body;
+    const result = scorePatient(req.body);
 
-    // Validate input data
-    if (!patient_id) {
-      return res.status(400).json({ message: "patient_id is required" });
-    }
-
-    // Validate access rules
-    if (req.user.role === "patient" && req.user.patient_id !== patient_id) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    // Fetch patient data from PMS
-    const patient = getPatientById(patient_id);
-    if (!patient) return res.status(404).json({ message: "Patient not found in PMS" });
-
-    // Apply scoring rules
-    // TODO: connect to predictive analysis subsystem
-    // remove this local/rule-based scoring call after integration
-    const result = computeRiskScore(patient);
-
-    // Persist generated recommendations and score output
     const assessment = await Assessment.create({
-      patient_id,
+      userId: req.user._id,
       risk_score: result.risk_score,
       risk_level: result.risk_level,
-      confidence: result.confidence,
-      recommendations: result.recommendations,
-      specialists: result.specialists,
-      lab_tests: result.lab_tests,
-      score_breakdown: result.score_breakdown,
-      assessed_by: req.user._id,
+      inputs: req.body,
+      insights: {
+        recommendations: result.recommendations,
+        suggested_specialist: result.suggested_specialist,
+        optional_lab_tests: result.optional_lab_tests,
+        disclaimer: result.disclaimer,
+      },
     });
 
-    res.status(201).json({ ...result, assessment_id: assessment._id, timestamp: assessment.createdAt });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.status(201).json({
+      assessment_id: assessment._id,
+      ...result,
+      createdAt: assessment.createdAt,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to assess patient risk" });
   }
 });
 
-/**
- * Description:
- * Returns recent assessments for a specific patient.
- *
- * Inputs:
- * - id (patient_id from query string)
- *
- * Output:
- * - latest assessment records (up to 10)
- */
-// GET /risk-assessment/user?id=PH001
-router.get("/user", protect, async (req, res) => {
+// POST /api/v1/predictive-analysis/pms/risk-assessment
+router.post(
+  "/pms/risk-assessment",
+  requireApiKey, // API key validation
+  pmsRateLimiter, // protect PMS endpoint
+  pmsRequestLogger,
+  async (req, res) => {
+    try {
+      console.log("Step 1: received body");
+      console.log("Incoming PMS data:", req.body);
+
+      if (!req.body || !req.body.lifestyle) {
+        return res.status(400).json({ message: "Invalid input structure" });
+      }
+
+      // connect here (PMS integration point)
+      console.log("Step 2: scoring...");
+      const result = scorePatient(req.body);
+
+      console.log("Step 3: saving...");
+      const assessment = await Assessment.create({
+        risk_score: result.risk_score,
+        risk_level: result.risk_level,
+        inputs: req.body,
+        insights: {
+          recommendations: result.recommendations,
+          suggested_specialist: result.suggested_specialist,
+          optional_lab_tests: result.optional_lab_tests,
+          disclaimer: result.disclaimer,
+        },
+      });
+
+      console.log("Step 4: success");
+      return res.status(201).json({
+        assessment_id: assessment._id,
+        ...result,
+        createdAt: assessment.createdAt,
+      });
+    } catch (error) {
+      console.error("🔥 PMS ERROR:", error);
+      return res.status(500).json({
+        message: "Failed to assess patient risk via PMS",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// POST /api/v1/predictive-analysis/pms/from-pms/:patientId
+router.post(
+  "/pms/from-pms/:patientId",
+  requireApiKey,
+  pmsRateLimiter,
+  pmsRequestLogger,
+  runPmsAssessment
+);
+
+// GET /api/v1/predictive-analysis/risk-assessment/user?id=PATIENT_ID
+router.get("/risk-assessment/user", requireAuth, async (req, res) => {
   try {
-    const { id } = req.query;
+    console.log("RISK REQUEST FOR:", req.query.id);
+    const id = req.query.id;
 
-    // Validate query input
     if (!id) {
-      return res.status(400).json({ message: "id is required" });
+      return res.status(400).json({ message: "Missing patient_id" });
     }
 
-    // Validate access rules
-    if (req.user.role === "patient" && req.user.patient_id !== id) {
-      return res.status(403).json({ message: "Access denied" });
+    const result = await Assessment.findOne({ "inputs.patient_id": id }).sort({ createdAt: -1 });
+
+    if (!result) {
+      return res.status(200).json({ data: null });
     }
 
-    // Fetch assessment history for dashboard/progress views
-    const assessments = await Assessment.find({ patient_id: id })
-      .sort({ createdAt: -1 })
-      .limit(10);
-
-    res.json(assessments);
+    return res.json({ data: result });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("RISK FETCH ERROR:", err.message);
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /api/v1/predictive-analysis/user-history
+router.get("/user-history", requireAuth, async (req, res) => {
+  try {
+    const history = await Assessment.find({ userId: req.user._id }).sort({ createdAt: -1 });
+    return res.json(history);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch user history" });
   }
 });
 

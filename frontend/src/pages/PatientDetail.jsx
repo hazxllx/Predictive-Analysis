@@ -34,38 +34,61 @@ export default function PatientDetail() {
   });
   const [showAllRecommendations, setShowAllRecommendations] = useState(false);
 
+  const [showAppointmentModal, setShowAppointmentModal] = useState(false);
+  const [appointmentDateTime, setAppointmentDateTime] = useState("");
+  const [appointmentLoading, setAppointmentLoading] = useState(false);
+  const [appointmentFeedback, setAppointmentFeedback] = useState({ type: "", message: "" });
+
   const canRunAssessment = user?.role === "staff" || user?.role === "admin";
   const backPath = user?.role === "admin" ? "/admin-dashboard" : "/patients";
 
   useEffect(() => {
+    console.log("ROUTE PARAM ID:", id);
+    if (!id) return;
+
     const load = async () => {
       try {
-        const { data: p } = await api.get(`/patients/${id}`);
-        setPatient(p);
+        const res = await api.get(`/patients/${id}`);
+        console.log("FULL RESPONSE:", res.data);
 
-        const { data: h } = await api.get(`/risk-assessment/user?id=${id}`);
-        const list = Array.isArray(h) ? h : [];
-        const uniqueHistory = Array.from(
-          new Map(
-            list
-              .sort((a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp))
-              .map((entry) => [
-                `${entry.risk_level}-${entry.risk_score}-${new Date(entry.createdAt || entry.timestamp).toISOString()}`,
-                entry,
-              ])
-          ).values()
-        );
-        setHistory(uniqueHistory);
-        if (uniqueHistory.length > 0) setAssessment(uniqueHistory[0]);
+        const payload = res?.data?.data;
+
+        if (!payload || !payload.patient_id || !payload.name) {
+          throw new Error("Invalid response shape");
+        }
+
+        setPatient(payload);
       } catch (err) {
+        console.error("PATIENT LOAD ERROR:", err);
         setError(err.response?.data?.message || "Failed to load patient");
       } finally {
         setLoading(false);
+      }
+
+      try {
+        const riskRes = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${id}`);
+        const riskData = riskRes?.data?.data || null;
+
+        if (riskData) {
+          setAssessment(riskData);
+          setHistory([riskData]);
+        } else {
+          setAssessment(null);
+          setHistory([]);
+        }
+      } catch (err) {
+        console.warn("Risk not found or API failed:", err.message);
+        setAssessment(null);
+        setHistory([]);
       }
     };
 
     load();
   }, [id]);
+
+  useEffect(() => {
+    console.log("PATIENT STATE:", patient);
+  }, [patient]);
 
   const runAssessment = async () => {
     setAssessing(true);
@@ -74,8 +97,8 @@ export default function PatientDetail() {
       const { data } = await api.post("/risk-assessment", { patient_id: id });
       setAssessment(data);
 
-      const { data: h } = await api.get(`/risk-assessment/user?id=${id}`);
-      const list = Array.isArray(h) ? h : [];
+      const { data: h } = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${id}`);
+      const list = Array.isArray(h?.data) ? h.data : [];
       const uniqueHistory = Array.from(
         new Map(
           list
@@ -118,6 +141,32 @@ export default function PatientDetail() {
     setExpandedPanels((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const requestAppointment = async () => {
+    if (!appointmentDateTime || appointmentLoading) return;
+
+    setAppointmentLoading(true);
+    setAppointmentFeedback({ type: "", message: "" });
+
+    try {
+      await api.post("/api/v1/appointments/request", {
+        patientId: id,
+        scheduledDate: new Date(appointmentDateTime).toISOString(),
+      });
+      setAppointmentFeedback({ type: "success", message: "Request sent" });
+      setTimeout(() => {
+        setShowAppointmentModal(false);
+        setAppointmentDateTime("");
+      }, 700);
+    } catch (err) {
+      setAppointmentFeedback({
+        type: "error",
+        message: err.response?.data?.message || "Failed to request appointment",
+      });
+    } finally {
+      setAppointmentLoading(false);
+    }
+  };
+
   const score = Number(assessment?.risk_score || 0);
   const gaugeColor = getScoreColor(score);
   const gaugeTrack = `conic-gradient(${gaugeColor} ${Math.min(score, 100) * 3.6}deg, #eef2f7 0deg)`;
@@ -129,6 +178,17 @@ export default function PatientDetail() {
         <div style={styles.center}>
           <div style={styles.spinner} />
           <p style={styles.centerSub}>Loading patient assessment...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!patient) {
+    return (
+      <div style={styles.layout}>
+        <Sidebar />
+        <div style={styles.center}>
+          <p style={styles.centerSub}>Loading patient...</p>
         </div>
       </div>
     );
@@ -161,7 +221,7 @@ export default function PatientDetail() {
           <div style={styles.identity}>
             <div style={styles.avatar}>{initials}</div>
             <div>
-              <h1 style={styles.pageTitle}>{patient?.name || "Patient"}</h1>
+              <h1 style={styles.pageTitle}>{patient?.name ?? "No Name"}</h1>
               <p style={styles.pageSubtitle}>
                 {patient?.patient_id} · {patient?.age}y · {patient?.gender} · {patient?.blood_type}
               </p>
@@ -169,13 +229,24 @@ export default function PatientDetail() {
           </div>
 
           {canRunAssessment && (
-            <button
-              style={{ ...styles.assessBtn, opacity: assessing ? 0.75 : 1 }}
-              onClick={runAssessment}
-              disabled={assessing}
-            >
-              {assessing ? "Assessing..." : "Run Assessment"}
-            </button>
+            <div style={styles.headerActions}>
+              <button
+                style={{ ...styles.ghostActionBtn }}
+                onClick={() => {
+                  setAppointmentFeedback({ type: "", message: "" });
+                  setShowAppointmentModal(true);
+                }}
+              >
+                Request Appointment
+              </button>
+              <button
+                style={{ ...styles.assessBtn, opacity: assessing ? 0.75 : 1 }}
+                onClick={runAssessment}
+                disabled={assessing}
+              >
+                {assessing ? "Assessing..." : "Run Assessment"}
+              </button>
+            </div>
           )}
         </header>
 
@@ -279,14 +350,24 @@ export default function PatientDetail() {
                   expanded={expandedPanels[PANEL_KEYS.medicalHistory]}
                   onToggle={() => togglePanel(PANEL_KEYS.medicalHistory)}
                 >
-                  <ChipGrid
-                    data={patient?.medical_history}
-                    positiveLabel="Yes"
-                    negativeLabel="No"
-                    positiveTone="warm"
-                    negativeTone="cool"
-                    formatter={formatKey}
-                  />
+                  {Array.isArray(patient?.patient_record) && patient.patient_record.length > 0 ? (
+                    <ul style={styles.previewList}>
+                      {patient.patient_record.map((item, index) => (
+                        <li key={`${item}-${index}`} style={styles.previewItem}>
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <ChipGrid
+                      data={patient?.medical_history}
+                      positiveLabel="Yes"
+                      negativeLabel="No"
+                      positiveTone="warm"
+                      negativeTone="cool"
+                      formatter={formatKey}
+                    />
+                  )}
                 </CollapsibleCard>
 
                 <CollapsibleCard
@@ -348,6 +429,57 @@ export default function PatientDetail() {
                 {assessing ? "Assessing..." : "Run Assessment"}
               </button>
             )}
+          </div>
+        )}
+        {showAppointmentModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <h3 style={styles.modalTitle}>Request Appointment</h3>
+              <p style={styles.modalSub}>Select a preferred date and time for this patient.</p>
+
+              <input
+                type="datetime-local"
+                value={appointmentDateTime}
+                onChange={(e) => setAppointmentDateTime(e.target.value)}
+                style={styles.dateInput}
+                disabled={appointmentLoading}
+              />
+
+              {appointmentFeedback.message && (
+                <div
+                  style={
+                    appointmentFeedback.type === "success" ? styles.successNotice : styles.errorNotice
+                  }
+                >
+                  {appointmentFeedback.message}
+                </div>
+              )}
+
+              <div style={styles.modalActions}>
+                <button
+                  style={styles.modalCancelBtn}
+                  onClick={() => {
+                    if (appointmentLoading) return;
+                    setShowAppointmentModal(false);
+                    setAppointmentFeedback({ type: "", message: "" });
+                  }}
+                  disabled={appointmentLoading}
+                >
+                  Cancel
+                </button>
+                <button
+                  style={{
+                    ...styles.modalConfirmBtn,
+                    opacity: appointmentLoading || !appointmentDateTime ? 0.7 : 1,
+                    cursor: appointmentLoading || !appointmentDateTime ? "not-allowed" : "pointer",
+                  }}
+                  onClick={requestAppointment}
+                  disabled={appointmentLoading || !appointmentDateTime}
+                >
+                  {appointmentLoading ? "Processing..." : "Confirm Request"}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </main>
@@ -479,6 +611,7 @@ const styles = {
   },
   pageTitle: { margin: 0, fontSize: "20px", color: "#123447" },
   pageSubtitle: { marginTop: "2px", color: "#6b8799", fontSize: "12px" },
+  headerActions: { display: "inline-flex", alignItems: "center", gap: "8px" },
   assessBtn: {
     border: "none",
     borderRadius: "10px",
@@ -487,6 +620,18 @@ const styles = {
     fontSize: "12px",
     fontWeight: 700,
     padding: "9px 14px",
+    transition: "opacity 180ms ease, transform 180ms ease",
+  },
+  ghostActionBtn: {
+    border: "1px solid #d4e7ef",
+    borderRadius: "10px",
+    background: "#f8fcfe",
+    color: "#24526b",
+    fontSize: "12px",
+    fontWeight: 700,
+    padding: "9px 12px",
+    boxShadow: "0 2px 8px rgba(21, 68, 97, 0.06)",
+    transition: "all 180ms ease",
   },
   errorBar: {
     background: "#fff1f2",
@@ -658,4 +803,81 @@ const styles = {
   },
   centerSub: { marginTop: "10px", color: "#6b8799", fontSize: "12px" },
   errorText: { color: "#be123c", marginBottom: "10px" },
+
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(10, 28, 43, 0.28)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 40,
+    padding: "16px",
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: "430px",
+    background: "#ffffff",
+    border: "1px solid #e2edf3",
+    borderRadius: "16px",
+    boxShadow: "0 18px 48px rgba(18, 49, 71, 0.16)",
+    padding: "16px",
+  },
+  modalTitle: { margin: 0, fontSize: "18px", color: "#15384e" },
+  modalSub: { margin: "6px 0 12px", fontSize: "13px", color: "#5f7685" },
+  dateInput: {
+    width: "100%",
+    border: "1px solid #d8e6ef",
+    borderRadius: "10px",
+    padding: "10px 12px",
+    fontSize: "13px",
+    color: "#1f3543",
+    background: "#fbfdff",
+    outline: "none",
+  },
+  successNotice: {
+    marginTop: "10px",
+    background: "#ecfdf3",
+    border: "1px solid #b7ebd0",
+    color: "#166534",
+    borderRadius: "9px",
+    fontSize: "12px",
+    padding: "8px 10px",
+  },
+  errorNotice: {
+    marginTop: "10px",
+    background: "#fff4f2",
+    border: "1px solid #ffd8d2",
+    color: "#b42318",
+    borderRadius: "9px",
+    fontSize: "12px",
+    padding: "8px 10px",
+  },
+  modalActions: {
+    marginTop: "14px",
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: "8px",
+  },
+  modalCancelBtn: {
+    border: "1px solid #d9e7ef",
+    borderRadius: "10px",
+    background: "#ffffff",
+    color: "#5e7688",
+    fontSize: "12px",
+    fontWeight: 700,
+    padding: "8px 12px",
+    cursor: "pointer",
+  },
+  modalConfirmBtn: {
+    border: "none",
+    borderRadius: "10px",
+    background: "#1f6b93",
+    color: "#ffffff",
+    fontSize: "12px",
+    fontWeight: 700,
+    padding: "8px 12px",
+    boxShadow: "0 4px 14px rgba(22, 96, 135, 0.2)",
+    transition: "opacity 180ms ease",
+  },
 };

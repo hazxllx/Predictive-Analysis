@@ -47,16 +47,97 @@ export default function PatientDashboard() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
+  const [appointments, setAppointments] = useState([]);
+  const [appointmentsLoading, setAppointmentsLoading] = useState(false);
+  const [appointmentActionLoading, setAppointmentActionLoading] = useState(false);
+  const [resolvedPatientId, setResolvedPatientId] = useState(null);
+  const [linkInfo, setLinkInfo] = useState(null);
+
+  const loadAppointments = useCallback(async () => {
+    try {
+      const pid = resolvedPatientId || user?.patient_id;
+      if (!pid) return;
+      setAppointmentsLoading(true);
+      const { data } = await api.get(`/api/v1/appointments/patient/${pid}`);
+      setAppointments(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Patient appointments load error:", err);
+    } finally {
+      setAppointmentsLoading(false);
+    }
+  }, [resolvedPatientId, user?.patient_id]);
+
+  const respondToAppointment = async (appointmentId, action) => {
+    if (appointmentActionLoading) return;
+
+    try {
+      setAppointmentActionLoading(true);
+      await api.patch(`/api/v1/appointments/${appointmentId}/respond`, { action });
+      await loadAppointments();
+    } catch (err) {
+      console.error("Appointment response error:", err);
+    } finally {
+      setAppointmentActionLoading(false);
+    }
+  };
+
   const loadDashboard = useCallback(async () => {
     try {
-      const pid = user?.patient_id;
-      if (!pid) return;
+      if (!user) return;
 
-      const { data: patientData } = await api.get("/patients");
-      const own = Array.isArray(patientData) ? patientData.find((p) => p.patient_id === pid) : null;
-      setPatient(own || null);
+      const { data: meResponse } = await api.get("/patients/me");
+      console.log("[PatientDashboard] /patients/me response:", meResponse);
 
-      const { data: list } = await api.get(`/risk-assessment/user?id=${pid}`);
+      if (meResponse?.linked && meResponse?.data) {
+        setPatient(meResponse.data);
+        const pid = meResponse.data.id || meResponse.data.patient_id || user?.patient_id || null;
+        setResolvedPatientId(pid);
+        setLinkInfo(null);
+
+        if (pid) {
+          const { data: list } = await api.get(`/risk-assessment/user?id=${pid}`);
+          const assessments = Array.isArray(list) ? list : [];
+          const sorted = [...assessments].sort(
+            (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
+          );
+
+          setAssessmentHistory(sorted);
+          setLatestAssessment(sorted[0] || null);
+          setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || null);
+        } else {
+          setAssessmentHistory([]);
+          setLatestAssessment(null);
+          setLastUpdatedAt(null);
+        }
+
+        return;
+      }
+
+      if (meResponse?.multipleMatches) {
+        setPatient(null);
+        setResolvedPatientId(null);
+        setAssessmentHistory([]);
+        setLatestAssessment(null);
+        setLastUpdatedAt(null);
+        setLinkInfo({
+          type: "multiple",
+          message:
+            "Multiple PMS profiles matched your name. Please contact support to link the correct patient profile.",
+        });
+        return;
+      }
+
+      setPatient(null);
+      setResolvedPatientId(null);
+      setAssessmentHistory([]);
+      setLatestAssessment(null);
+      setLastUpdatedAt(null);
+      setLinkInfo({
+        type: "none",
+        message: "No matching PMS profile found for your account name yet.",
+      });
+
+      const { data: list } = await api.get(`/risk-assessment/user?id=${user?.patient_id}`);
       const assessments = Array.isArray(list) ? list : [];
       const sorted = [...assessments].sort(
         (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
@@ -76,9 +157,14 @@ export default function PatientDashboard() {
     loadDashboard();
   }, [loadDashboard]);
 
+  useEffect(() => {
+    loadAppointments();
+  }, [loadAppointments]);
+
   const runAssessment = async () => {
     if (runningAssessment) return;
-    if (!user?.patient_id) {
+    const pid = resolvedPatientId || user?.patient_id;
+    if (!pid) {
       setAssessmentError("Unable to run assessment. Missing patient information.");
       return;
     }
@@ -87,7 +173,7 @@ export default function PatientDashboard() {
     setAssessmentError("");
 
     try {
-      const { data } = await api.post("/risk-assessment", { patient_id: user.patient_id });
+      const { data } = await api.post("/risk-assessment", { patient_id: pid });
 
       setLatestAssessment((prev) => ({
         ...(prev || {}),
@@ -105,7 +191,7 @@ export default function PatientDashboard() {
 
       setLastUpdatedAt(data?.timestamp || new Date().toISOString());
 
-      const { data: list } = await api.get(`/risk-assessment/user?id=${user.patient_id}`);
+      const { data: list } = await api.get(`/risk-assessment/user?id=${pid}`);
       const assessments = Array.isArray(list) ? list : [];
       const sorted = [...assessments].sort(
         (a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp)
@@ -140,7 +226,7 @@ export default function PatientDashboard() {
   const score = currentScore;
   const level = hasAssessment ? latestAssessment?.risk_level || null : null;
   const status = hasAssessment ? statusFromLevel(level) : "No assessment yet";
-  const greeting = `${timeGreeting()}, ${patient?.name?.split(" ")[0] || user?.name?.split(" ")[0] || "Patient"}`;
+  const greeting = `${timeGreeting()}, ${patient?.name?.split(" ")[0] || "Patient"}`;
 
   const hasVitals = useMemo(() => {
     const v = patient?.vitals || {};
@@ -208,6 +294,41 @@ export default function PatientDashboard() {
     return { reasons: cleanReasons, improvements: cleanImprovements, mainFactor: cleanReasons[0] || null };
   }, [hasAssessment, latestAssessment, patient, level]);
 
+  const pendingAppointment = useMemo(
+    () =>
+      appointments
+        .filter((a) => a?.status === "pending")
+        .sort((a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0))
+        .at(-1) || null,
+    [appointments]
+  );
+
+  const confirmedAppointments = useMemo(
+    () =>
+      appointments
+        .filter((a) => a?.status === "confirmed")
+        .sort((a, b) => new Date(a?.scheduledDate || 0) - new Date(b?.scheduledDate || 0)),
+    [appointments]
+  );
+
+  const tomorrowReminder = useMemo(() => {
+    if (!confirmedAppointments.length) return null;
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+
+    return (
+      confirmedAppointments.find((a) => {
+        const dt = new Date(a?.scheduledDate);
+        return (
+          dt.getFullYear() === tomorrow.getFullYear() &&
+          dt.getMonth() === tomorrow.getMonth() &&
+          dt.getDate() === tomorrow.getDate()
+        );
+      }) || null
+    );
+  }, [confirmedAppointments]);
+
   const updatedLabel = (() => {
     if (!lastUpdatedAt) return null;
     const dt = new Date(lastUpdatedAt);
@@ -231,8 +352,8 @@ export default function PatientDashboard() {
   if (!patient) {
     return (
       <NotLinkedState
-        title="You're not connected yet"
-        description="Start assessment to create your profile"
+        title={linkInfo?.type === "multiple" ? "Multiple profiles found" : "You're not connected yet"}
+        description={linkInfo?.message || "Start assessment to create your profile"}
         primaryText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
         onPrimary={runAssessment}
       />
@@ -474,6 +595,69 @@ export default function PatientDashboard() {
               </div>
             </div>
           </div>
+        </section>
+
+        <section
+          style={{
+            background: "#ffffff",
+            borderRadius: "14px",
+            border: "1px solid #e5edf3",
+            boxShadow: "0 2px 10px rgba(10,40,70,0.04)",
+            padding: "0.85rem 0.95rem",
+            marginBottom: "0.85rem",
+          }}
+        >
+          <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#1f3f5a", marginBottom: "0.55rem" }}>
+            Upcoming Appointments
+          </div>
+
+          {appointmentsLoading ? (
+            <div style={{ fontSize: "0.82rem", color: "#5f7488" }}>Loading appointments...</div>
+          ) : appointments.length === 0 ? (
+            <div style={{ fontSize: "0.82rem", color: "#6b8093" }}>No appointments yet.</div>
+          ) : (
+            <div style={{ display: "grid", gap: "0.45rem" }}>
+              {appointments.map((appt) => (
+                <div
+                  key={appt._id}
+                  style={{
+                    border: "1px solid #e5edf3",
+                    borderRadius: "10px",
+                    padding: "0.52rem 0.62rem",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    background: "#fcfeff",
+                  }}
+                >
+                  <div style={{ fontSize: "0.82rem", color: "#2d4b63" }}>
+                    {new Date(appt.scheduledDate).toLocaleString("en-PH", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </div>
+                  <span
+                    style={{
+                      fontSize: "0.73rem",
+                      fontWeight: 700,
+                      borderRadius: "999px",
+                      padding: "0.2rem 0.55rem",
+                      background:
+                        appt.status === "confirmed" ? "#e8f6ef" : appt.status === "declined" ? "#fff1f2" : "#eef5fb",
+                      color:
+                        appt.status === "confirmed" ? "#1d7a4f" : appt.status === "declined" ? "#9f1239" : "#355d7a",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {appt.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {hasVitals ? (

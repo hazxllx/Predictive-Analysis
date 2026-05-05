@@ -113,7 +113,9 @@ export default function AdminUsers() {
 
   const filtered = users.filter((u) => {
     const q = search.trim().toLowerCase();
-    const matchSearch = !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+    const displayName = (u.displayName || u.name || "").toLowerCase();
+    const email = (u.email || "").toLowerCase();
+    const matchSearch = !q || displayName.includes(q) || email.includes(q);
     const matchRole = roleFilter === "All" || u.role === roleFilter;
     return matchSearch && matchRole;
   });
@@ -176,8 +178,8 @@ export default function AdminUsers() {
                       <tr key={u.id || u._id} style={styles.tr}>
                         <td style={styles.td}>
                           <div style={styles.nameCell}>
-                            <div style={styles.avatar}>{u.name.charAt(0).toUpperCase()}</div>
-                            <span style={styles.nameText}>{u.name}</span>
+                            <div style={styles.avatar}>{(u.displayName || u.name || "U").charAt(0).toUpperCase()}</div>
+                            <span style={styles.nameText}>{u.displayName || u.name}</span>
                           </div>
                         </td>
                         <td style={styles.td}>{u.email}</td>

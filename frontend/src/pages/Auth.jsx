@@ -66,8 +66,8 @@ export default function Auth() {
         );
       }
       navigate(getRoleHome(loggedInUser?.role));
-    } catch (err) {
-      setError(err.response?.data?.message || "Something went wrong. Please try again.");
+    } catch (error) {
+      setError(error.response?.data?.message || "Login failed");
     } finally {
       setLoading(false);
     }

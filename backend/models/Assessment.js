@@ -2,15 +2,16 @@ const mongoose = require("mongoose");
 
 const assessmentSchema = new mongoose.Schema(
   {
-    patient_id: { type: String, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     risk_score: { type: Number, required: true },
     risk_level: { type: String, required: true },
-    confidence: { type: String, required: true },
-    recommendations: [String],
-    specialists: [String],
-    lab_tests: [String],
-    score_breakdown: { type: Object, required: true },
-    assessed_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    inputs: { type: Object, required: true },
+    insights: {
+      recommendations: { type: [String], default: [] },
+      suggested_specialist: { type: [String], default: [] },
+      optional_lab_tests: { type: [String], default: [] },
+      disclaimer: { type: String, required: true },
+    },
   },
   { timestamps: true }
 );
