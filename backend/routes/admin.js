@@ -112,14 +112,14 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
-// GET /admin/stats — system-wide statistics
+// GET /admin/stats — system-wide statistics (ONLY real saved assessments)
 router.get("/stats", async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
     const totalStaff = await User.countDocuments({ role: "staff" });
     const totalPatientUsers = await User.countDocuments({ role: "patient" });
     const totalAdmins = await User.countDocuments({ role: "admin" });
-    const totalAssessments = await Assessment.countDocuments();
+    const totalAssessments = await Assessment.countDocuments(); // Only real saved assessments
     const totalPatients = (await fetchAllPatients()).length;
 
     res.json({

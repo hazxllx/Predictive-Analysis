@@ -1,14 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Activity, Cigarette, Wine } from "lucide-react";
+import { Activity, Cigarette, Salad, Wine } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
-
-// PUT HERE PMS (future integration for patient data + prediction API)
+import { normalizePatientResponse } from "../utils/normalizePatients";
+import { invalidateCachedQuery, setCachedQuery } from "../api/queryCache";
 
 const LIFESTYLE_ICON_MAP = {
   smoking: Cigarette,
   alcohol: Wine,
+  diet: Salad,
   activity: Activity,
 };
 
@@ -32,7 +33,8 @@ export default function AssessmentExecution() {
     const loadPatient = async () => {
       try {
         const { data } = await api.get(`/patients/${id}`);
-        setPatient(data);
+        const normalized = normalizePatientResponse(data);
+        setPatient(normalized);
       } catch (err) {
         setError(err.response?.data?.message || "Failed to load patient.");
       } finally {
@@ -63,14 +65,24 @@ export default function AssessmentExecution() {
     );
   }, [patient?.name]);
 
-  const conditions = useMemo(() => getConditions(patient), [patient]);
+  const conditions = useMemo(
+    () =>
+      Array.isArray(patient?.condition_categories) && patient.condition_categories.length > 0
+        ? patient.condition_categories.slice(0, 4)
+        : patient?.medical_summaries?.slice(0, 4) || [],
+    [patient]
+  );
+
   const lifestyleIndicators = useMemo(() => getLifestyleIndicators(patient), [patient]);
+  const vitals = useMemo(() => Object.entries(patient?.vitals || {}), [patient?.vitals]);
 
   const runAssessment = async () => {
     setRunning(true);
     setError("");
     try {
-      await api.post("/risk-assessment", { patient_id: id });
+      const { data } = await api.post("/api/v1/predictive-analysis/risk-assessment", { patient_id: id });
+      setCachedQuery(["assessment", id], data);
+      invalidateCachedQuery(["patients"]);
       await wait(1200);
       navigate(`/patients/${id}`);
     } catch (err) {
@@ -123,15 +135,17 @@ export default function AssessmentExecution() {
       <Sidebar />
       <main style={styles.main}>
         <header style={styles.header}>
-          <button style={styles.secondaryBtn} onClick={() => navigate("/patients")}>
-            ← Back
+          <button style={styles.secondaryBtn} onClick={() => navigate(`/patients/${id}`)}>
+            {"<- Back"}
           </button>
           <div style={styles.identity}>
             <div style={styles.avatar}>{initials}</div>
             <div>
               <h1 style={styles.pageTitle}>{patient.name}</h1>
               <p style={styles.pageSubtitle}>
-                {patient.patient_id} · {patient.age}y · {patient.gender}
+                {[patient.patient_id, patient.age !== null ? `${patient.age}y` : null, patient.gender]
+                  .filter(Boolean)
+                  .join(" | ")}
               </p>
             </div>
           </div>
@@ -172,10 +186,13 @@ export default function AssessmentExecution() {
 
           <div style={styles.summarySection}>
             <p style={styles.sectionLabel}>Vitals</p>
-            <p style={styles.vitalsText}>
-              BP: {patient?.vitals?.blood_pressure || "N/A"} · Glucose: {patient?.vitals?.blood_glucose ?? "N/A"} ·
-              Cholesterol: {patient?.vitals?.cholesterol ?? "N/A"}
-            </p>
+            {vitals.length > 0 ? (
+              <p style={styles.vitalsText}>
+                {vitals.map(([key, value]) => `${formatKey(key)}: ${value}`).join(" | ")}
+              </p>
+            ) : (
+              <p style={styles.emptyText}>No vitals available</p>
+            )}
           </div>
         </section>
 
@@ -191,36 +208,34 @@ export default function AssessmentExecution() {
   );
 }
 
-function getConditions(patient) {
-  const history = patient?.medical_history || {};
-  const chips = [];
-  if (history.heart_disease || history.hypertension) chips.push("Cardiovascular");
-  if (history.hypertension) chips.push("Hypertension");
-  if (history.diabetes) chips.push("Diabetes");
-  if (history.asthma || history.copd) chips.push("Respiratory");
-  if (history.kidney_disease) chips.push("Renal");
-  if (history.cancer) chips.push("Cancer");
-  if (history.stroke) chips.push("Neurologic");
-  return [...new Set(chips)].slice(0, 4);
-}
-
 function getLifestyleIndicators(patient) {
   const lifestyle = patient?.lifestyle || {};
   const indicators = [];
-  if (lifestyle.smoking) indicators.push({ type: "smoking", label: "Smoker", tone: "warm" });
-  if (lifestyle.alcohol) indicators.push({ type: "alcohol", label: "Alcohol", tone: "accent" });
-  indicators.push({
-    type: "activity",
-    label: formatActivity(lifestyle.physical_activity || "active"),
-    tone: "neutral",
-  });
+
+  if (lifestyle.smoking !== undefined) {
+    indicators.push({ type: "smoking", label: `Smoking: ${lifestyle.smoking ? "Yes" : "No"}`, tone: "warm" });
+  }
+  if (lifestyle.alcohol !== undefined) {
+    indicators.push({ type: "alcohol", label: `Alcohol: ${lifestyle.alcohol ? "Yes" : "No"}`, tone: "accent" });
+  }
+  if (lifestyle.diet) {
+    indicators.push({ type: "diet", label: `Diet: ${lifestyle.diet}`, tone: "neutral" });
+  }
+  if (lifestyle.physical_activity) {
+    indicators.push({
+      type: "activity",
+      label: `Physical Activity: ${lifestyle.physical_activity}`,
+      tone: "neutral",
+    });
+  }
+
   return indicators;
 }
 
-function formatActivity(activity) {
-  const value = String(activity || "").toLowerCase().trim();
-  if (!value) return "Active";
-  return value.charAt(0).toUpperCase() + value.slice(1);
+function formatKey(key) {
+  return String(key || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function toneStyle(tone) {
@@ -234,10 +249,20 @@ function wait(ms) {
 }
 
 const styles = {
-  layout: { display: "flex", minHeight: "100vh", background: "#f7fbfd" },
-  main: { flex: 1, padding: "18px 22px", display: "flex", flexDirection: "column", gap: "12px" },
+  layout: { display: "flex", height: "100vh", overflow: "hidden", background: "#f7fbfd" },
+  main: {
+    flex: 1,
+    minWidth: 0,
+    overflowY: "auto",
+    padding: "18px 22px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
   mainCentered: {
     flex: 1,
+    minWidth: 0,
+    overflowY: "auto",
     display: "flex",
     flexDirection: "column",
     justifyContent: "center",
@@ -322,7 +347,7 @@ const styles = {
     padding: "8px 12px",
   },
   errorText: { color: "#be123c" },
-  emptyText: { color: "#94a3b8", fontSize: "12px" },
+  emptyText: { color: "#94a3b8", fontSize: "12px", margin: 0 },
   spinner: {
     width: "28px",
     height: "28px",
@@ -341,4 +366,5 @@ const styles = {
   },
   processingTitle: { margin: 0, fontSize: "18px", color: "#17384c" },
   processingSub: { margin: 0, fontSize: "13px", color: "#5f7685" },
+  centerTitle: { margin: 0, color: "#5f7685", fontSize: "13px" },
 };

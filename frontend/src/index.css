@@ -88,3 +88,16 @@ input:focus, select:focus {
 button:hover:not(:disabled) {
   filter: brightness(1.05);
 }
+
+.dashboard-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: #f5f8fb;
+}
+
+.dashboard-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}

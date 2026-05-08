@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
 import { normalizePatients } from "../utils/normalizePatients";
+import { fetchWithCache } from "../api/cachedFetch";
 
 /* ─── Date helpers ────────────────────────────────────────────── */
 function ymd(d) {
@@ -397,8 +398,17 @@ export default function AuditLog() {
         await Promise.all(
           patients?.map(async (p) => {
             try {
-              const { data: assessments } = await api.get(`/risk-assessment/user?id=${p.patient_id}`);
-              (Array.isArray(assessments) ? assessments : []).forEach((a) => {
+              const { data: assessments } = await fetchWithCache({
+                key: ["assessment", p.patient_id],
+                fetcher: async () => {
+                  const res = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${p.patient_id}`);
+                  return res.data;
+                },
+              });
+              
+              const assessmentData = assessments?.data ?? assessments;
+              (Array.isArray(assessmentData) ? assessmentData : [assessmentData].filter(Boolean)).forEach((a) => {
+                if (!a) return;
                 allRows.push({
                   logId: a._id || `${p.patient_id}-${a.timestamp || a.createdAt}`,
                   patientId: p.patient_id,
@@ -414,7 +424,11 @@ export default function AuditLog() {
           })
         );
 
-        allRows.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        allRows.sort((a, b) => {
+          const dateA = a.timestamp ? new Date(a.timestamp) : new Date(0);
+          const dateB = b.timestamp ? new Date(b.timestamp) : new Date(0);
+          return dateB - dateA;
+        });
         setRows(allRows);
       } catch (err) {
         console.error(err);

@@ -27,30 +27,27 @@ export default function AdminDashboard() {
           : [];
         setPatients(patientArray);
 
+        // Fetch REAL assessments only - not enriched data
         const allAssessments = [];
         await Promise.all(
           patientArray.slice(0, 20).map(async (p) => {
             const pid = p.id || p.patient_id;
             if (!pid) return;
 
-            if (p.risk_level && (p.riskScore != null || p.risk_score != null)) {
-              allAssessments.push({
-                risk_level: p.risk_level,
-                risk_score: p.riskScore ?? p.risk_score,
-                patientName: p.name,
-                patient_id: pid,
-                timestamp: new Date().toISOString(),
-              });
-              return;
-            }
-
             try {
-              const { data } = await api.get(`/api/v1/predictive-analysis/user?id=${pid}`);
-              if (Array.isArray(data) && data.length > 0) {
-                allAssessments.push({ ...data[0], patientName: p.name, patient_id: pid });
+              const { data } = await api.get(
+                `/api/v1/predictive-analysis/risk-assessment/user?id=${pid}`
+              );
+              if (data?.data) {
+                // Only add if real assessment exists (data.data is not null)
+                allAssessments.push({
+                  ...data.data,
+                  patientName: p.name,
+                  patient_id: pid,
+                });
               }
             } catch {
-              // ignore
+              // No assessment for this patient - that's fine
             }
           })
         );

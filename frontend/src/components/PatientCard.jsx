@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Stethoscope, TriangleAlert } from "lucide-react";
+import { Stethoscope, TriangleAlert, Activity, Cigarette, Wine } from "lucide-react";
 import RiskBadge from "./RiskBadge";
+import { extractConditionTags } from "../utils/conditionExtraction";
 
 export default function PatientCard({ patient, assessment }) {
   const navigate = useNavigate();
@@ -23,6 +24,21 @@ export default function PatientCard({ patient, assessment }) {
 
   const riskPercent = assessment?.risk_score ? Math.min(assessment.risk_score, 100) : 0;
 
+  // Extract clean condition tags from patient data
+  const conditionTags = useMemo(() => extractConditionTags(patient), [patient]);
+
+  // Get lifestyle badges - ONLY show if the value is true
+  const lifestyleBadges = useMemo(() => {
+    const badges = [];
+    if (patient?.lifestyle?.smoking) {
+      badges.push({ type: "smoking", label: "Smoking", color: "#c2410c" });
+    }
+    if (patient?.lifestyle?.alcohol) {
+      badges.push({ type: "alcohol", label: "Alcohol", color: "#d97706" });
+    }
+    return badges;
+  }, [patient?.lifestyle]);
+
   return (
     <div
       style={styles.card}
@@ -37,11 +53,34 @@ export default function PatientCard({ patient, assessment }) {
           <p style={styles.meta}>
             {patient.patient_id} · {patient.age}y · {patient.gender}
           </p>
-          <p style={styles.location}>{patient.address}</p>
+          {patient.address && <p style={styles.location}>{patient.address}</p>}
         </div>
       </div>
 
       <div style={styles.divider} />
+
+      {/* Condition Tags - Clean medical condition labels */}
+      {conditionTags.length > 0 && (
+        <div style={styles.conditionTags}>
+          {conditionTags.map((tag) => (
+            <span key={tag} style={styles.conditionTag}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Lifestyle Indicators - Only show when TRUE */}
+      {lifestyleBadges.length > 0 && (
+        <div style={styles.lifestyleIndicators}>
+          {lifestyleBadges.map(({ type, label, color }) => (
+            <span key={type} style={{ ...styles.lifestyleIndicator, color }}>
+              {type === "smoking" ? <Cigarette size={12} /> : <Wine size={12} />}
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div style={styles.feedbackRow}>
         {missingProfileData && <span style={styles.incompleteBadge}>Incomplete profile</span>}
@@ -53,18 +92,22 @@ export default function PatientCard({ patient, assessment }) {
       </div>
 
       <div style={styles.bottom}>
-        <div style={styles.stat}>
-          <span style={styles.statLabel}>Blood Type</span>
-          <span style={styles.statVal}>{patient.blood_type}</span>
-        </div>
-        <div style={styles.stat}>
-          <span style={styles.statLabel}>Last Checkup</span>
-          <span style={styles.statVal}>
-            {new Date(patient.last_checkup).toLocaleDateString("en-PH", {
-              month: "short", day: "numeric", year: "numeric"
-            })}
-          </span>
-        </div>
+        {patient.blood_type && (
+          <div style={styles.stat}>
+            <span style={styles.statLabel}>Blood Type</span>
+            <span style={styles.statVal}>{patient.blood_type}</span>
+          </div>
+        )}
+        {patient.last_checkup && (
+          <div style={styles.stat}>
+            <span style={styles.statLabel}>Last Checkup</span>
+            <span style={styles.statVal}>
+              {new Date(patient.last_checkup).toLocaleDateString("en-PH", {
+                month: "short", day: "numeric", year: "numeric"
+              })}
+            </span>
+          </div>
+        )}
         <div style={styles.stat}>
           <span style={styles.statLabel}>Medications</span>
           <span style={styles.statVal}>{patient.current_medications?.length || 0}</span>
@@ -93,7 +136,7 @@ export default function PatientCard({ patient, assessment }) {
               <RiskBadge level={assessment.risk_level} />
               <span style={styles.riskScore}>Score: {assessment.risk_score}/100</span>
             </div>
-            <span style={styles.viewBtn}>View</span>
+            <span style={styles.viewBtn}>View Result →</span>
           </div>
 
           <div style={styles.quickLinks}>
@@ -121,8 +164,8 @@ export default function PatientCard({ patient, assessment }) {
 
       {!assessment && (
         <div style={styles.noAssessment}>
-          <span>No assessment yet</span>
-          <span style={styles.viewBtn}>Assess →</span>
+          <span>Not assessed</span>
+          <span style={styles.viewBtn}>Analyze →</span>
         </div>
       )}
     </div>
@@ -144,6 +187,33 @@ const styles = {
     gap: "12px",
     padding: "16px",
     alignItems: "flex-start",
+  },
+  conditionTags: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "4px",
+    padding: "0 16px 8px",
+  },
+  conditionTag: {
+    fontSize: "10px",
+    color: "#1f5564",
+    background: "#edf9fc",
+    border: "1px solid #d1eef5",
+    borderRadius: "999px",
+    padding: "2px 8px",
+    fontWeight: "600",
+  },
+  lifestyleIndicators: {
+    display: "flex",
+    gap: "8px",
+    padding: "0 16px 8px",
+  },
+  lifestyleIndicator: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "4px",
+    fontSize: "10px",
+    fontWeight: "600",
   },
   avatar: {
     width: "42px",

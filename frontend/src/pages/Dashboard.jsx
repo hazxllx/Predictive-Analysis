@@ -104,16 +104,18 @@ export default function Dashboard() {
         const pList = normalizePatients(res);
         setPatients(pList);
 
+        // Fetch REAL saved assessments only - NOT enriched data
         const allAssessments = [];
         await Promise.all(
           pList?.map(async (p) => {
             try {
-              const { data } = await api.get(`/risk-assessment/user?id=${p.patient_id}`);
-              if (Array.isArray(data)) {
-                data.forEach((a) => allAssessments.push({ ...a, patient_id: p.patient_id }));
+              const { data } = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${p.patient_id}`);
+              if (data?.data) {
+                // Only add if real assessment exists (data.data is not null)
+                allAssessments.push({ ...data.data, patient_id: p.patient_id });
               }
             } catch {
-              // ignore per-patient error
+              // ignore per-patient error - no assessment for this patient
             }
           })
         );

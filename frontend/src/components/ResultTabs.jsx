@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Microscope, Stethoscope, Lightbulb } from "lucide-react";
+import { Microscope, Stethoscope, Lightbulb, BarChart3 } from "lucide-react";
+import { normalizeAssessment } from "../utils/normalizeAssessment";
 
-const tabs = ["Recommendations", "Specialists", "Lab Tests"];
+const tabs = ["Recommendations", "Specialists", "Lab Tests", "Breakdown"];
 
 export default function ResultTabs({ data, initialTab = "Recommendations" }) {
   const tabIndexByName = useMemo(
@@ -9,62 +10,127 @@ export default function ResultTabs({ data, initialTab = "Recommendations" }) {
       Recommendations: 0,
       Specialists: 1,
       "Lab Tests": 2,
+      Breakdown: 3,
     }),
     []
   );
 
   const [active, setActive] = useState(tabIndexByName[initialTab] ?? 0);
+  const assessment = normalizeAssessment(data);
 
   useEffect(() => {
     setActive(tabIndexByName[initialTab] ?? 0);
   }, [initialTab, tabIndexByName]);
 
+  if (!assessment) {
+    return null;
+  }
+
+  const recommendations = assessment.recommendations || [];
+  const specialists = assessment.specialists || [];
+  const labTests = assessment.lab_tests || [];
+  const breakdown = assessment.breakdown || [];
+
   const renderContent = () => {
-    if (active === 0) return (
-      <ul style={styles.list}>
-        {data.recommendations?.map((r, i) => (
-          <li key={i} style={styles.listItem}>
-            <span style={styles.bullet}><Lightbulb size={13} /></span>
-            <span>{r}</span>
-          </li>
-        ))}
-      </ul>
-    );
-    if (active === 1) return (
-      <div style={styles.chipGrid}>
-        {data.specialists?.map((s, i) => (
-          <div key={i} style={styles.chip}>
-            <span style={styles.chipIcon}><Stethoscope size={13} /></span> {s}
+    if (active === 0) {
+      return recommendations.length > 0 ? (
+        <ul style={styles.list}>
+          {recommendations.map((item, index) => (
+            <li key={`${index}-${item}`} style={styles.listItem}>
+              <span style={styles.bullet}>
+                <Lightbulb size={13} />
+              </span>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div style={styles.emptyState}>No recommendations available</div>
+      );
+    }
+
+    if (active === 1) {
+      return specialists.length > 0 ? (
+        <div style={styles.chipGrid}>
+          {specialists.map((item) => (
+            <div key={item} style={styles.chip}>
+              <span style={styles.chipIcon}>
+                <Stethoscope size={13} />
+              </span>
+              {item}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={styles.emptyState}>No specialists recommended</div>
+      );
+    }
+
+    if (active === 2) {
+      return labTests.length > 0 ? (
+        <div style={styles.chipGrid}>
+          {labTests.map((item) => (
+            <div
+              key={item}
+              style={{
+                ...styles.chip,
+                background: "#f0fdf4",
+                color: "#16a34a",
+                border: "1px solid #bbf7d0",
+              }}
+            >
+              <span style={styles.chipIcon}>
+                <Microscope size={13} />
+              </span>
+              {item}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={styles.emptyState}>No lab tests recommended</div>
+      );
+    }
+
+    if (active === 3) {
+      return breakdown.length > 0 ? (
+        <div style={styles.breakdownList}>
+          {breakdown.map((item) => (
+            <div key={`${item.category}-${item.label}`} style={styles.breakdownRow}>
+              <div style={styles.breakdownMeta}>
+                <span style={styles.breakdownIcon}>
+                  <BarChart3 size={13} />
+                </span>
+                <div style={styles.breakdownText}>
+                  <span style={styles.breakdownLabel}>{item.label}</span>
+                  <span style={styles.breakdownCategory}>{item.category || "Score Contribution"}</span>
+                </div>
+              </div>
+              <span style={styles.breakdownValue}>+{item.points}</span>
+            </div>
+          ))}
+          <div style={styles.breakdownTotal}>
+            <span>Total Risk Score</span>
+            <span>{assessment.risk_score || 0}/100</span>
           </div>
-        ))}
-      </div>
-    );
-    if (active === 2) return (
-      <div style={styles.chipGrid}>
-        {data.lab_tests?.map((l, i) => (
-          <div key={i} style={{
-            ...styles.chip,
-            background: "#f0fdf4",
-            color: "#16a34a",
-            border: "1px solid #bbf7d0"
-          }}>
-            <span style={styles.chipIcon}><Microscope size={13} /></span> {l}
-          </div>
-        ))}
-      </div>
-    );
+        </div>
+      ) : (
+        <div style={styles.emptyState}>No score breakdown available</div>
+      );
+    }
+
+    return null;
   };
 
   return (
     <div style={styles.wrap}>
       <div style={styles.tabBar}>
-        {tabs.map((t, i) => (
+        {tabs.map((tab, index) => (
           <button
-            key={t}
-            style={{ ...styles.tab, ...(active === i ? styles.tabActive : {}) }}
-            onClick={() => setActive(i)}
+            key={tab}
+            style={{ ...styles.tab, ...(active === index ? styles.tabActive : {}) }}
+            onClick={() => setActive(index)}
           >
-            {t}
+            {tab}
           </button>
         ))}
       </div>
@@ -93,10 +159,10 @@ const styles = {
     flexShrink: 0,
   },
   tab: {
-    padding: "10px 14px",
+    padding: "10px 12px",
     border: "none",
     background: "transparent",
-    fontSize: "12px",
+    fontSize: "11px",
     fontWeight: "500",
     color: "#64748b",
     cursor: "pointer",
@@ -120,6 +186,8 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     gap: "10px",
+    margin: 0,
+    padding: 0,
   },
   listItem: {
     display: "flex",
@@ -160,5 +228,62 @@ const styles = {
     fontSize: "13px",
     display: "inline-flex",
     alignItems: "center",
+  },
+  breakdownList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0",
+  },
+  breakdownRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: "12px",
+    padding: "10px 12px",
+    borderBottom: "1px solid #f1f5f9",
+    fontSize: "12px",
+  },
+  breakdownMeta: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "8px",
+  },
+  breakdownIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    color: "#0ea5e9",
+    marginTop: "2px",
+  },
+  breakdownText: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  breakdownLabel: {
+    color: "#1e293b",
+    fontWeight: "600",
+  },
+  breakdownCategory: {
+    color: "#64748b",
+    fontSize: "11px",
+  },
+  breakdownValue: {
+    color: "#1e293b",
+    fontWeight: "700",
+  },
+  breakdownTotal: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "12px",
+    background: "#f8fafc",
+    borderTop: "1px solid #e2e8f0",
+    fontSize: "13px",
+    fontWeight: "600",
+    color: "#1e293b",
+  },
+  emptyState: {
+    color: "#94a3b8",
+    fontSize: "12px",
   },
 };

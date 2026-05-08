@@ -1,7 +1,8 @@
-
 const axios = require("axios");
 
 const BASE_URL = process.env.PMS_BASE_URL || "https://pms-backend-kohl.vercel.app/api/v1/external";
+const PMS_PAGE_LIMIT = 1000;
+const CACHE_TTL_MS = Number(process.env.PMS_CACHE_TTL_MS || 2 * 60 * 1000);
 
 const pmsClient = axios.create({
   baseURL: BASE_URL,
@@ -11,68 +12,132 @@ const pmsClient = axios.create({
   },
 });
 
+const cache = {
+  patients: { data: null, updatedAt: 0 },
+  records: { data: null, updatedAt: 0 },
+};
+
+const CONDITION_PATTERNS = {
+  cardiovascular: /\b(hypertension|heart|cardio|stroke|arrhythmia|coronary|angina|myocardial|heart failure)\b/i,
+  metabolic: /\b(diabetes|metabolic|glucose|insulin|obesity|hyperlipidemia|cholesterol)\b/i,
+  respiratory: /\b(asthma|copd|respiratory|bronchitis|pneumonia|lung|upper respiratory)\b/i,
+  renal: /\b(renal|kidney|nephro|ckd|dialysis)\b/i,
+  mental: /\b(anxiety|depression|mental|psychiatric|bipolar|stress)\b/i,
+  cancer: /\b(cancer|oncology|tumou?r|malignan)\b/i,
+};
+
 function assertPmsKey() {
   if (!process.env.PMS_API_KEY) {
     throw new Error("Missing PMS_API_KEY in environment");
   }
 }
 
-const calculateAge = (dob) => {
-  if (!dob) return null;
-  const birth = new Date(dob);
-  const today = new Date();
-  return today.getFullYear() - birth.getFullYear();
-};
-
-function mapPatient(p = {}, records = []) {
-  const fullName = p.name || `${p.first_name || ""} ${p.last_name || ""}`.trim();
-
-  if (!p?.patient_id || !fullName) {
-    throw new Error("Invalid PMS patient shape");
-  }
-
-  return {
-    patient_id: String(p.patient_id),
-    name: fullName,
-    gender: p.gender || null,
-    age: p.age ?? calculateAge(p.date_of_birth) ?? null,
-    last_visit_date: deriveLastVisitDate(p, records),
-    attending_physician: deriveAttendingPhysician(p, records),
-    patient_record: [],
-  };
+function isCacheFresh(bucket) {
+  return Boolean(bucket?.data) && Date.now() - bucket.updatedAt < CACHE_TTL_MS;
 }
 
-const CONDITION_PATTERNS = {
-  cardiovascular: /\b(hypertension|heart|cardio|stroke|arrhythmia|coronary|angina|myocardial)\b/i,
-  metabolic: /\b(diabetes|metabolic|glucose|insulin|obesity|hyperlipidemia|cholesterol)\b/i,
-  respiratory: /\b(asthma|copd|respiratory|bronchitis|pneumonia|lung)\b/i,
-  renal: /\b(renal|kidney|nephro|ckd|dialysis)\b/i,
-  mental: /\b(anxiety|depression|mental|psychiatric|bipolar|stress)\b/i,
-  cancer: /\b(cancer|oncology|tumou?r|malignan)\b/i,
-};
+function setCache(key, data) {
+  cache[key] = {
+    data,
+    updatedAt: Date.now(),
+  };
+  return data;
+}
 
-const extractRecordText = (record = {}) => {
-  return String(
-    record?.summary ||
-      record?.diagnosis ||
-      record?.condition ||
-      record?.details?.visitAssessment ||
-      record?.details?.diagnosis ||
-      record?.details?.summary ||
-      record?.noteContent ||
-      record?.notes ||
-      record?.chiefComplaint ||
-      ""
-  ).trim();
-};
+function cleanText(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
 
-const toIsoOrNull = (value) => {
+  const normalized = text.toLowerCase();
+  if (normalized === "n/a" || normalized === "undefined" || normalized === "null") {
+    return "";
+  }
+
+  return text;
+}
+
+function titleCase(value = "") {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function normalizeCategory(value = "") {
+  const text = cleanText(value).replace(/[_-]+/g, " ");
+  if (!text) return "";
+  return titleCase(text);
+}
+
+function pushUnique(target, value) {
+  const text = cleanText(value);
+  if (!text) return;
+
+  if (!target.some((item) => item.toLowerCase() === text.toLowerCase())) {
+    target.push(text);
+  }
+}
+
+function parseBoolean(value) {
+  if (typeof value === "boolean") return value;
+  const normalized = cleanText(value).toLowerCase();
+  if (!normalized) return undefined;
+  if (["true", "yes", "1"].includes(normalized)) return true;
+  if (["false", "no", "0"].includes(normalized)) return false;
+  return undefined;
+}
+
+function calculateAge(dob) {
+  if (!dob) return null;
+
+  const birth = new Date(dob);
+  if (Number.isNaN(birth.getTime())) return null;
+
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const monthDiff = today.getMonth() - birth.getMonth();
+
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+    age -= 1;
+  }
+
+  return age >= 0 ? age : null;
+}
+
+function toIsoOrNull(value) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
-};
+}
 
-const deriveLastVisitDate = (patient = {}, records = []) => {
+function getRecordDate(record = {}) {
+  return (
+    record?.record_date ||
+    record?.recordDate ||
+    record?.visit_date ||
+    record?.visitDate ||
+    record?.date ||
+    record?.created_at ||
+    record?.createdAt ||
+    record?.updated_at ||
+    record?.updatedAt ||
+    null
+  );
+}
+
+function sortRecordsNewestFirst(records = []) {
+  return [...records].sort((left, right) => {
+    const leftDate = new Date(getRecordDate(left) || 0).getTime();
+    const rightDate = new Date(getRecordDate(right) || 0).getTime();
+    return rightDate - leftDate;
+  });
+}
+
+function deriveLastVisitDate(patient = {}, records = []) {
   const direct =
     patient?.last_visit_date ||
     patient?.lastVisitDate ||
@@ -83,39 +148,26 @@ const deriveLastVisitDate = (patient = {}, records = []) => {
   const directIso = toIsoOrNull(direct);
   if (directIso) return directIso;
 
-  const recordDates = records
-    .map(
-      (record) =>
-        record?.last_visit_date ||
-        record?.visit_date ||
-        record?.visitDate ||
-        record?.date ||
-        record?.createdAt ||
-        record?.timestamp ||
-        record?.details?.visitDate ||
-        null
-    )
-    .map(toIsoOrNull)
-    .filter(Boolean)
-    .sort((a, b) => new Date(b) - new Date(a));
+  const latestRecord = sortRecordsNewestFirst(records)[0];
+  return toIsoOrNull(getRecordDate(latestRecord));
+}
 
-  return recordDates[0] || null;
-};
-
-const deriveAttendingPhysician = (patient = {}, records = []) => {
+function deriveAttendingPhysician(patient = {}, records = []) {
   const direct =
     patient?.attending_physician ||
     patient?.attendingPhysician ||
+    patient?.provider ||
     patient?.physician ||
     patient?.doctor_name ||
     patient?.doctorName ||
     null;
 
-  if (direct) return String(direct).trim() || null;
+  if (cleanText(direct)) return cleanText(direct);
 
-  const physicianFromRecord = records
+  const latestProvider = sortRecordsNewestFirst(records)
     .map(
       (record) =>
+        record?.provider ||
         record?.attending_physician ||
         record?.attendingPhysician ||
         record?.physician ||
@@ -125,72 +177,275 @@ const deriveAttendingPhysician = (patient = {}, records = []) => {
         record?.details?.doctor ||
         null
     )
-    .find((value) => String(value || "").trim().length > 0);
+    .find((value) => cleanText(value));
 
-  return physicianFromRecord ? String(physicianFromRecord).trim() : null;
-};
+  return cleanText(latestProvider) || null;
+}
 
-const normalizeConditions = (texts = []) => {
-  const combined = texts.join(" \n ").toLowerCase();
-  const categories = Object.entries(CONDITION_PATTERNS)
-    .filter(([, pattern]) => pattern.test(combined))
-    .map(([category]) => category);
+function normalizeLifestyle(lifestyle = {}) {
+  const smoking = parseBoolean(lifestyle?.smoking);
+  const alcohol = parseBoolean(lifestyle?.alcohol);
+  const diet = cleanText(lifestyle?.diet);
+  const physicalActivity = cleanText(lifestyle?.physical_activity || lifestyle?.physicalActivity);
 
-  return [...new Set(categories)];
-};
+  const normalized = {};
 
-const withPatientRecords = (patient, allRecords = []) => {
-  const pid = String(patient?.patient_id || "");
-  const patientRecords = allRecords.filter((record) => {
-    return String(record?.patient_id || "") === String(pid);
+  if (smoking !== undefined) normalized.smoking = smoking;
+  if (alcohol !== undefined) normalized.alcohol = alcohol;
+  if (diet) normalized.diet = diet;
+  if (physicalActivity) normalized.physical_activity = physicalActivity;
+
+  return normalized;
+}
+
+function buildVitals(records = []) {
+  const latestVisit = sortRecordsNewestFirst(records).find((record) => {
+    const type = cleanText(record?.record_type || record?.recordType).toLowerCase();
+    return !type || type === "visit" || type === "follow-up" || type === "urgent";
   });
 
-  const medicalNotes = patientRecords.map(extractRecordText).filter(Boolean);
-  const normalizedConditions = normalizeConditions(medicalNotes);
+  const details = latestVisit?.details || {};
+  const vitals = {};
+
+  const systolic = cleanText(details.visitBpSystolic);
+  const diastolic = cleanText(details.visitBpDiastolic);
+  if (systolic && diastolic) {
+    vitals.blood_pressure = `${systolic}/${diastolic}`;
+  }
+
+  const heartRate = cleanText(details.visitHeartRate);
+  if (heartRate) vitals.heart_rate = heartRate;
+
+  const respiratoryRate = cleanText(details.visitRespiratoryRate);
+  if (respiratoryRate) vitals.respiratory_rate = respiratoryRate;
+
+  const temperature = cleanText(details.visitTemperature);
+  if (temperature) vitals.temperature = temperature;
+
+  const weight = cleanText(details.visitWeight);
+  if (weight) vitals.weight = weight;
+
+  const height = cleanText(details.visitHeight);
+  if (height) vitals.height = height;
+
+  return vitals;
+}
+
+function detectConditionKeys(texts = []) {
+  const combined = texts.join(" \n ").toLowerCase();
+
+  return Object.entries(CONDITION_PATTERNS)
+    .filter(([, pattern]) => pattern.test(combined))
+    .map(([category]) => category);
+}
+
+function buildConditionCategories(records = []) {
+  const categoryKeys = [];
+  const texts = [];
+
+  records.forEach((record) => {
+    const categoryKey = cleanText(record?.condition_category).toLowerCase();
+    if (categoryKey && categoryKey !== "uncategorized") {
+      pushUnique(categoryKeys, categoryKey);
+    }
+
+    [
+      record?.summary,
+      record?.details?.summary,
+      record?.details?.visitAssessment,
+      record?.diagnosis,
+      record?.condition,
+      record?.details?.diagnosis,
+    ].forEach((value) => {
+      const text = cleanText(value);
+      if (text) texts.push(text);
+    });
+  });
+
+  detectConditionKeys(texts).forEach((categoryKey) => pushUnique(categoryKeys, categoryKey));
+
+  return categoryKeys;
+}
+
+function buildMedicalHistory(records = []) {
+  const history = [];
+  const medicalSummaries = [];
+  const visitReasons = [];
+
+  sortRecordsNewestFirst(records).forEach((record) => {
+    [
+      record?.details?.summary,
+      record?.details?.visitAssessment,
+      record?.summary,
+      record?.diagnosis,
+      record?.condition,
+      record?.details?.diagnosis,
+    ].forEach((value) => {
+      const text = cleanText(value);
+      if (!text) return;
+      pushUnique(medicalSummaries, text);
+      pushUnique(history, text);
+    });
+
+    const visitReason = cleanText(record?.details?.visitReason || record?.visitReason);
+    if (visitReason) {
+      pushUnique(visitReasons, visitReason);
+      pushUnique(history, `Visit reason: ${visitReason}`);
+    }
+  });
 
   return {
-    ...patient,
-    patient_record: normalizedConditions,
-    medical_notes: medicalNotes,
-    medical_history_message:
-      normalizedConditions.length === 0 ? "No medical history available" : null,
+    history,
+    medicalSummaries,
+    visitReasons,
   };
-};
+}
 
-async function fetchAllPatients() {
+function buildContact(patient = {}) {
+  const phone = cleanText(patient?.contact_number || patient?.contact || patient?.phone);
+  const email = cleanText(patient?.email_address || patient?.email);
+
+  return [phone, email].filter(Boolean).join(" | ") || null;
+}
+
+function groupRecordsByPatient(records = []) {
+  return records.reduce((map, record) => {
+    const patientId = cleanText(record?.patient_id);
+    if (!patientId) return map;
+
+    if (!map.has(patientId)) {
+      map.set(patientId, []);
+    }
+
+    map.get(patientId).push(record);
+    return map;
+  }, new Map());
+}
+
+function mapPatient(rawPatient = {}, records = []) {
+  const patientId = cleanText(rawPatient?.patient_id);
+  const fullName =
+    cleanText(rawPatient?.name) ||
+    cleanText(`${cleanText(rawPatient?.first_name)} ${cleanText(rawPatient?.last_name)}`.trim());
+
+  if (!patientId || !fullName) {
+    throw new Error("Invalid PMS patient shape");
+  }
+
+  const conditionKeys = buildConditionCategories(records);
+  const { history, medicalSummaries, visitReasons } = buildMedicalHistory(records);
+
+  return {
+    patient_id: patientId,
+    name: fullName,
+    first_name: cleanText(rawPatient?.first_name) || null,
+    last_name: cleanText(rawPatient?.last_name) || null,
+    gender: cleanText(rawPatient?.gender) || null,
+    age: rawPatient?.age ?? calculateAge(rawPatient?.date_of_birth) ?? null,
+    date_of_birth: toIsoOrNull(rawPatient?.date_of_birth),
+    address: cleanText(rawPatient?.address) || null,
+    contact: buildContact(rawPatient),
+    contact_number: cleanText(rawPatient?.contact_number) || null,
+    email_address: cleanText(rawPatient?.email_address) || null,
+    blood_type: cleanText(rawPatient?.blood_type) || null,
+    current_medications: Array.isArray(rawPatient?.current_medications)
+      ? rawPatient.current_medications.map((item) => cleanText(item)).filter(Boolean)
+      : [],
+    last_visit_date: deriveLastVisitDate(rawPatient, records),
+    attending_physician: deriveAttendingPhysician(rawPatient, records),
+    lifestyle: normalizeLifestyle(rawPatient?.lifestyle),
+    vitals: buildVitals(records),
+    patient_record: history,
+    medical_summaries: medicalSummaries,
+    visit_reasons: visitReasons,
+    condition_categories: conditionKeys.map((category) => normalizeCategory(category)).filter(Boolean),
+    record_count: records.length,
+    insurance: rawPatient?.insurance || null,
+    status: cleanText(rawPatient?.status) || null,
+  };
+}
+
+function extractPatientsFromResponse(response) {
+  if (Array.isArray(response?.data?.data?.patients)) return response.data.data.patients;
+  if (Array.isArray(response?.data?.data)) return response.data.data;
+  if (Array.isArray(response?.data?.patients)) return response.data.patients;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
+}
+
+function extractHealthRecordsFromResponse(response) {
+  if (Array.isArray(response?.data?.data?.records)) return response.data.data.records;
+  if (Array.isArray(response?.data?.data?.healthRecords)) return response.data.data.healthRecords;
+  if (Array.isArray(response?.data?.data)) return response.data.data;
+  if (Array.isArray(response?.data?.records)) return response.data.records;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
+}
+
+async function fetchAllHealthRecords(force = false) {
   assertPmsKey();
+
+  if (!force && isCacheFresh(cache.records)) {
+    return cache.records.data;
+  }
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      const [response, records] = await Promise.all([pmsClient.get("/patients"), fetchHealthRecords()]);
+      const response = await pmsClient.get(`/health-records?page=1&limit=${PMS_PAGE_LIMIT}`);
+      return setCache("records", extractHealthRecordsFromResponse(response));
+    } catch (error) {
+      console.error(`PMS health-records error (attempt ${attempt}):`, error.response?.data || error.message);
 
-      const rawPatients = Array.isArray(response?.data?.data?.patients)
-        ? response.data.data.patients
-        : Array.isArray(response?.data?.data)
-        ? response.data.data
-        : Array.isArray(response?.data)
-        ? response.data
-        : [];
+      if (attempt === 2) {
+        return [];
+      }
+    }
+  }
 
-      return rawPatients
+  return [];
+}
+
+async function fetchHealthRecords(patientId = null, options = {}) {
+  const records = await fetchAllHealthRecords(options?.force);
+
+  if (!patientId) {
+    return records;
+  }
+
+  return records.filter((record) => cleanText(record?.patient_id) === cleanText(patientId));
+}
+
+async function fetchAllPatients(options = {}) {
+  assertPmsKey();
+
+  if (!options?.force && isCacheFresh(cache.patients)) {
+    return cache.patients.data;
+  }
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const [response, records] = await Promise.all([
+        pmsClient.get(`/patients?page=1&limit=${PMS_PAGE_LIMIT}`),
+        fetchAllHealthRecords(options?.force),
+      ]);
+
+      const rawPatients = extractPatientsFromResponse(response);
+      const recordsByPatient = groupRecordsByPatient(records);
+
+      const normalizedPatients = rawPatients
         .map((rawPatient) => {
           try {
-            return withPatientRecords(
-              mapPatient(
-                rawPatient,
-                records.filter(
-                  (record) => String(record?.patient_id || "") === String(rawPatient?.patient_id || "")
-                )
-              ),
-              records
-            );
+            const patientId = cleanText(rawPatient?.patient_id);
+            return mapPatient(rawPatient, recordsByPatient.get(patientId) || []);
           } catch {
             return null;
           }
         })
         .filter(Boolean);
+
+      return setCache("patients", normalizedPatients);
     } catch (error) {
-      console.error(`🔥 PMS ERROR (attempt ${attempt}):`, error.response?.data || error.message);
+      console.error(`PMS patients error (attempt ${attempt}):`, error.response?.data || error.message);
 
       if (attempt === 2) {
         return [];
@@ -201,97 +456,45 @@ async function fetchAllPatients() {
   return [];
 }
 
-async function fetchPatient(patient_id) {
+async function fetchPatient(patientId, options = {}) {
   assertPmsKey();
 
-  if (!patient_id) {
+  const normalizedPatientId = cleanText(patientId);
+  if (!normalizedPatientId) {
     throw new Error("Missing patient_id input");
   }
 
-  console.log("CALLING PMS PATIENT:", patient_id);
-
-  const res = await axios.get(`${BASE_URL}/patients/${patient_id}`, {
-    headers: {
-      "x-api-key": process.env.PMS_API_KEY,
-    },
-    timeout: 8000,
-  });
-
-  console.log("PMS RAW RESPONSE:", JSON.stringify(res.data, null, 2));
-
-  const container = res.data?.data;
-  const raw =
-    container?.patient ||
-    (Array.isArray(container?.patients) ? container.patients[0] : null) ||
-    container;
-
-  if (!raw || typeof raw !== "object") {
-    throw new Error("PMS response missing data object");
-  }
-
-  const patientId = String(raw.patient_id || "").trim();
-  const fullName = String(raw.name || `${raw.first_name || ""} ${raw.last_name || ""}`.trim()).trim();
-
-  if (!patientId) {
-    throw new Error("Invalid PMS patient_id");
-  }
-
-  if (!fullName) {
-    throw new Error("Invalid PMS patient name");
-  }
-
-  let records = [];
-  try {
-    records = await fetchHealthRecords(patientId);
-  } catch (recordError) {
-    console.error("Health records fetch failed:", recordError.message);
-  }
-
-  const patientRecords = Array.isArray(records) ? records : [];
-
-  const normalized = {
-    patient_id: patientId,
-    name: fullName,
-    gender: raw.gender ?? null,
-    age: raw.age ?? calculateAge(raw.date_of_birth) ?? null,
-    last_visit_date: deriveLastVisitDate(raw, patientRecords),
-    attending_physician: deriveAttendingPhysician(raw, patientRecords),
-    patient_record: [],
-  };
-
-  return withPatientRecords(normalized, records);
-}
-
-async function fetchHealthRecords(patientId = null) {
-  assertPmsKey();
-
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const response = await pmsClient.get("/health-records");
-      let records = [];
-      if (Array.isArray(response.data)) {
-        records = response.data;
-      } else if (Array.isArray(response.data?.data)) {
-        records = response.data.data;
-      } else if (Array.isArray(response.data?.data?.records)) {
-        records = response.data.data.records;
-      } else if (Array.isArray(response.data?.data?.healthRecords)) {
-        records = response.data.data.healthRecords;
-      }
-
-      if (!patientId) return records;
-
-      return records.filter((record) => String(record?.patient_id || "") === String(patientId));
-    } catch (error) {
-      console.error(`🔥 PMS ERROR health-records (attempt ${attempt}):`, error.response?.data || error.message);
-
-      if (attempt === 2) {
-        return [];
-      }
+  if (!options?.force) {
+    const cachedPatients = isCacheFresh(cache.patients) ? cache.patients.data : null;
+    const cachedPatient = cachedPatients?.find((entry) => cleanText(entry?.patient_id) === normalizedPatientId);
+    if (cachedPatient) {
+      return cachedPatient;
     }
   }
 
-  return [];
+  try {
+    const allPatients = await fetchAllPatients(options);
+    const hydratedPatient = allPatients.find((entry) => cleanText(entry?.patient_id) === normalizedPatientId);
+    if (hydratedPatient) {
+      return hydratedPatient;
+    }
+  } catch (error) {
+    console.warn("Falling back to direct PMS patient fetch:", error.message);
+  }
+
+  const res = await pmsClient.get(`/patients/${normalizedPatientId}`);
+  const raw =
+    res?.data?.data?.patient ||
+    (Array.isArray(res?.data?.data?.patients) ? res.data.data.patients[0] : null) ||
+    res?.data?.data ||
+    null;
+
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Patient not found in PMS");
+  }
+
+  const records = await fetchHealthRecords(normalizedPatientId, options);
+  return mapPatient(raw, records);
 }
 
 module.exports = {

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Activity, ChevronDown, ChevronRight } from "lucide-react";
-import { useParams, useNavigate } from "react-router-dom";
+import { Activity, ChevronDown, ChevronRight, Cigarette, Wine, Utensils, Zap } from "lucide-react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import Sidebar from "../components/Sidebar";
 import RiskBadge from "../components/RiskBadge";
@@ -9,9 +9,14 @@ import ResultTabs from "../components/ResultTabs";
 import api from "../api/axios";
 import { formatDateTime } from "../utils/formatDateTime";
 import { fetchWithCache } from "../api/cachedFetch";
+import { invalidateCachedQuery, setCachedQuery } from "../api/queryCache";
+import { normalizePatient, normalizePatientResponse, cleanText } from "../utils/normalizePatients";
+import { normalizeAssessment } from "../utils/normalizeAssessment";
+import { extractConditionTags } from "../utils/conditionExtraction";
 
 const PANEL_KEYS = {
   patientInfo: "patientInfo",
+  lifestyle: "lifestyle",
   vitals: "vitals",
   medicalHistory: "medicalHistory",
   familyHistory: "familyHistory",
@@ -21,17 +26,22 @@ export default function PatientDetail() {
   const { id } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const [patient, setPatient] = useState(null);
-  const [assessment, setAssessment] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const initialPatient = normalizePatient(location.state?.patient);
+  const initialAssessment = normalizeAssessment(location.state?.assessment);
+
+  const [patient, setPatient] = useState(initialPatient);
+  const [assessment, setAssessment] = useState(initialAssessment);
+  const [history, setHistory] = useState(initialAssessment ? [initialAssessment] : []);
+  const [loading, setLoading] = useState(!initialPatient);
   const [assessing, setAssessing] = useState(false);
   const [error, setError] = useState("");
   const [expandedPanels, setExpandedPanels] = useState({
-    [PANEL_KEYS.patientInfo]: false,
-    [PANEL_KEYS.vitals]: false,
-    [PANEL_KEYS.medicalHistory]: false,
+    [PANEL_KEYS.patientInfo]: true,
+    [PANEL_KEYS.lifestyle]: true,
+    [PANEL_KEYS.vitals]: true,
+    [PANEL_KEYS.medicalHistory]: true,
     [PANEL_KEYS.familyHistory]: false,
   });
   const [showAllRecommendations, setShowAllRecommendations] = useState(false);
@@ -42,10 +52,9 @@ export default function PatientDetail() {
   const [appointmentFeedback, setAppointmentFeedback] = useState({ type: "", message: "" });
 
   const canRunAssessment = user?.role === "staff" || user?.role === "admin";
-  const backPath = user?.role === "admin" ? "/admin-dashboard" : "/patients";
+  const backPath = user?.role === "admin" ? "/admin/patients" : "/patients";
 
   useEffect(() => {
-    console.log("ROUTE PARAM ID:", id);
     if (!id) return;
 
     const load = async () => {
@@ -57,29 +66,35 @@ export default function PatientDetail() {
             return res.data;
           },
         });
-        console.log("FULL RESPONSE:", patientResponse);
 
-        const payload = patientResponse?.data;
-
-        if (!payload || !payload.patient_id || !payload.name) {
+        const normalizedPatient = normalizePatientResponse(patientResponse);
+        if (!normalizedPatient?.patient_id) {
           throw new Error("Invalid response shape");
         }
 
-        setPatient(payload);
+        setPatient(normalizedPatient);
+        setCachedQuery(["patient", id], normalizedPatient);
       } catch (err) {
         console.error("PATIENT LOAD ERROR:", err);
-        setError(err.response?.data?.message || "Failed to load patient");
+        setError(err.response?.data?.message || err.message || "Failed to load patient");
       } finally {
         setLoading(false);
       }
 
       try {
-        const riskRes = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${id}`);
-        const riskData = riskRes?.data?.data || null;
+        const riskRes = await fetchWithCache({
+          key: ["assessment", id],
+          fetcher: async () => {
+            const res = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${id}`);
+            return res.data;
+          },
+        });
 
-        if (riskData) {
-          setAssessment(riskData);
-          setHistory([riskData]);
+        const normalizedAssessment = normalizeAssessment(riskRes?.data ?? riskRes);
+        if (normalizedAssessment) {
+          setAssessment(normalizedAssessment);
+          setHistory([normalizedAssessment]);
+          setCachedQuery(["assessment", id], normalizedAssessment);
         } else {
           setAssessment(null);
           setHistory([]);
@@ -94,32 +109,24 @@ export default function PatientDetail() {
     load();
   }, [id]);
 
-  useEffect(() => {
-    console.log("PATIENT STATE:", patient);
-  }, [patient]);
-
   const runAssessment = async () => {
     setAssessing(true);
     setError("");
-    try {
-      const { data } = await api.post("/risk-assessment", { patient_id: id });
-      setAssessment(data);
 
-      const { data: h } = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${id}`);
-      const list = Array.isArray(h?.data) ? h.data : [];
-      const uniqueHistory = Array.from(
-        new Map(
-          list
-            .sort((a, b) => new Date(b.createdAt || b.timestamp) - new Date(a.createdAt || a.timestamp))
-            .map((entry) => [
-              `${entry.risk_level}-${entry.risk_score}-${new Date(entry.createdAt || entry.timestamp).toISOString()}`,
-              entry,
-            ])
-        ).values()
-      );
-      setHistory(uniqueHistory);
+    try {
+      const { data } = await api.post("/api/v1/predictive-analysis/risk-assessment", { patient_id: id });
+      const normalized = normalizeAssessment(data);
+
+      if (!normalized) {
+        throw new Error("Assessment response was empty");
+      }
+
+      setAssessment(normalized);
+      setHistory([normalized]);
+      setCachedQuery(["assessment", id], normalized);
+      invalidateCachedQuery(["patients"]);
     } catch (err) {
-      setError(err.response?.data?.message || "Assessment failed");
+      setError(err.response?.data?.message || err.message || "Assessment failed");
     } finally {
       setAssessing(false);
     }
@@ -139,11 +146,63 @@ export default function PatientDetail() {
 
   const displayedRecommendations = useMemo(() => {
     const list = Array.isArray(assessment?.recommendations) ? assessment.recommendations : [];
-    if (showAllRecommendations) return list;
-    return list.slice(0, 3);
+    return showAllRecommendations ? list : list.slice(0, 3);
   }, [assessment?.recommendations, showAllRecommendations]);
 
   const hasMoreRecommendations = (assessment?.recommendations?.length || 0) > 3;
+  const hasAssessment = Boolean(assessment);
+
+  const patientInfoRows = useMemo(
+    () =>
+      [
+        patient?.address ? ["Address", patient.address] : null,
+        patient?.contact ? ["Contact", patient.contact] : null,
+        patient?.last_visit_date ? ["Last Visit", formatDateTime(patient.last_visit_date)] : null,
+        patient?.attending_physician ? ["Attending Physician", patient.attending_physician] : null,
+        Array.isArray(patient?.current_medications) && patient.current_medications.length > 0
+          ? ["Medications", patient.current_medications.join(", ")]
+          : null,
+      ].filter(Boolean),
+    [patient]
+  );
+
+  const lifestyleRows = useMemo(
+    () =>
+      [
+        patient?.lifestyle?.smoking !== undefined
+          ? ["Smoking", patient.lifestyle.smoking ? "Yes" : "No"]
+          : null,
+        patient?.lifestyle?.alcohol !== undefined
+          ? ["Alcohol", patient.lifestyle.alcohol ? "Yes" : "No"]
+          : null,
+        patient?.lifestyle?.diet ? ["Diet", patient.lifestyle.diet] : null,
+        patient?.lifestyle?.physical_activity
+          ? ["Physical Activity", patient.lifestyle.physical_activity]
+          : null,
+      ].filter(Boolean),
+    [patient]
+  );
+
+  const lifestyleData = useMemo(() => {
+    if (!patient?.lifestyle) return null;
+    const data = {};
+    if (patient.lifestyle.smoking) data.smoking = true;
+    if (patient.lifestyle.alcohol) data.alcohol = true;
+    if (patient.lifestyle.diet) data.diet = patient.lifestyle.diet;
+    if (patient.lifestyle.physical_activity) data.physical_activity = patient.lifestyle.physical_activity;
+    return Object.keys(data).length > 0 ? data : null;
+  }, [patient?.lifestyle]);
+
+  const medicalHistoryItems = useMemo(() => {
+    return extractConditionTags(patient, 6);
+  }, [patient]);
+
+  const familyHistory = useMemo(() => compactRecord(patient?.family_history), [patient?.family_history]);
+  const vitals = useMemo(() => compactRecord(patient?.vitals), [patient?.vitals]);
+
+  const score = Number(assessment?.risk_score || 0);
+  const gaugeColor = getScoreColor(score);
+  const gaugeTrack = `conic-gradient(${gaugeColor} ${Math.min(score, 100) * 3.6}deg, #eef2f7 0deg)`;
 
   const togglePanel = (key) => {
     setExpandedPanels((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -175,17 +234,13 @@ export default function PatientDetail() {
     }
   };
 
-  const score = Number(assessment?.risk_score || 0);
-  const gaugeColor = getScoreColor(score);
-  const gaugeTrack = `conic-gradient(${gaugeColor} ${Math.min(score, 100) * 3.6}deg, #eef2f7 0deg)`;
-
-  if (loading) {
+  if (loading && !patient) {
     return (
       <div style={styles.layout}>
         <Sidebar />
         <div style={styles.center}>
           <div style={styles.spinner} />
-          <p style={styles.centerSub}>Loading patient assessment...</p>
+          <p style={styles.centerSub}>Loading patient details...</p>
         </div>
       </div>
     );
@@ -196,18 +251,7 @@ export default function PatientDetail() {
       <div style={styles.layout}>
         <Sidebar />
         <div style={styles.center}>
-          <p style={styles.centerSub}>Loading patient...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error && !patient) {
-    return (
-      <div style={styles.layout}>
-        <Sidebar />
-        <div style={styles.center}>
-          <p style={styles.errorText}>{error}</p>
+          <p style={styles.errorText}>{error || "Patient not found."}</p>
           <button style={styles.backBtn} onClick={() => navigate(backPath)}>
             Back
           </button>
@@ -223,7 +267,7 @@ export default function PatientDetail() {
       <main style={styles.main}>
         <header style={styles.header}>
           <button style={styles.backBtn} onClick={() => navigate(backPath)}>
-            ← Back
+            {"<- Back"}
           </button>
 
           <div style={styles.identity}>
@@ -231,7 +275,14 @@ export default function PatientDetail() {
             <div>
               <h1 style={styles.pageTitle}>{patient?.name ?? "No Name"}</h1>
               <p style={styles.pageSubtitle}>
-                {patient?.patient_id} · {patient?.age}y · {patient?.gender} · {patient?.blood_type}
+                {[
+                  patient?.patient_id,
+                  patient?.age !== undefined && patient?.age !== null ? `${patient.age}y` : null,
+                  patient?.gender || null,
+                  patient?.blood_type || null,
+                ]
+                  .filter(Boolean)
+                  .join(" | ")}
               </p>
             </div>
           </div>
@@ -239,7 +290,7 @@ export default function PatientDetail() {
           {canRunAssessment && (
             <div style={styles.headerActions}>
               <button
-                style={{ ...styles.ghostActionBtn }}
+                style={styles.ghostActionBtn}
                 onClick={() => {
                   setAppointmentFeedback({ type: "", message: "" });
                   setShowAppointmentModal(true);
@@ -260,8 +311,14 @@ export default function PatientDetail() {
 
         {error && <div style={styles.errorBar}>{error}</div>}
 
-        {assessment ? (
+        {hasAssessment && (
           <div style={styles.content}>
+            {assessment?.disclaimer && (
+              <div style={styles.disclaimerBox}>
+                <p style={styles.disclaimerText}>{assessment.disclaimer}</p>
+              </div>
+            )}
+
             <section style={styles.summaryCard}>
               <div style={styles.gaugeBox}>
                 <div style={{ ...styles.gauge, background: gaugeTrack }}>
@@ -273,36 +330,37 @@ export default function PatientDetail() {
                 <p style={styles.gaugeLabel}>Risk Score</p>
               </div>
 
-              <div style={styles.summaryMeta}>
-                <div style={styles.summaryBadges}>
+              <div style={styles.riskOverviewPanel}>
+                <div style={styles.overviewBadges}>
                   <RiskBadge level={assessment.risk_level} large />
-                  <ConfidenceBadge level={assessment.confidence} />
+                  {assessment?.confidence && <ConfidenceBadge level={assessment.confidence} />}
                 </div>
 
-                <p style={styles.timestamp}>
-                  <span style={styles.timestampLabel}>Last assessed:</span>{" "}
-                  {new Date(assessment.timestamp || assessment.createdAt).toLocaleString("en-PH", {
-                    month: "short",
-                    day: "numeric",
-                    year: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </p>
+                <div style={styles.overviewSection}>
+                  <h4 style={styles.overviewLabel}>Assessment Details</h4>
+                  {assessment?.createdAt && (
+                    <p style={styles.overviewItem}>
+                      <span style={styles.overviewItemLabel}>Last Assessed:</span>
+                      <span>{new Date(assessment.createdAt).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                    </p>
+                  )}
+                </div>
 
                 {history.length > 1 && (
-                  <div style={styles.historyBlock}>
-                    <p style={styles.historyTitle}>Recent Assessment History</p>
+                  <div style={styles.overviewSection}>
+                    <h4 style={styles.overviewLabel}>Assessment History</h4>
                     <div style={styles.historyInline}>
                       {history.slice(0, 3).map((entry) => (
                         <div key={entry._id || `${entry.createdAt}-${entry.risk_score}`} style={styles.historyItem}>
                           <span style={styles.historyLevel}>{entry.risk_level}</span>
                           <span style={styles.historyScore}>{entry.risk_score}/100</span>
                           <span style={styles.historyDate}>
-                            {new Date(entry.createdAt || entry.timestamp).toLocaleDateString("en-PH", {
-                              month: "short",
-                              day: "numeric",
-                            })}
+                            {entry.createdAt
+                              ? new Date(entry.createdAt).toLocaleDateString("en-PH", {
+                                  month: "short",
+                                  day: "numeric",
+                                })
+                              : ""}
                           </span>
                         </div>
                       ))}
@@ -311,92 +369,98 @@ export default function PatientDetail() {
                 )}
               </div>
             </section>
+          </div>
+        )}
 
-            <div style={styles.mainGrid}>
-              <section style={styles.leftColumn}>
-                <CollapsibleCard
-                  title="Patient Info"
-                  expanded={expandedPanels[PANEL_KEYS.patientInfo]}
-                  onToggle={() => togglePanel(PANEL_KEYS.patientInfo)}
-                >
-                  <InfoList
-                    rows={[
-                      ["Address", patient?.address || "N/A"],
-                      ["Contact", patient?.contact || "N/A"],
-                      [
-                        "Last Checkup",
-                        patient?.last_checkup
-                          ? new Date(patient.last_checkup).toLocaleDateString("en-PH", {
-                              month: "long",
-                              day: "numeric",
-                              year: "numeric",
-                            })
-                          : "N/A",
-                      ],
-                      ["Last Visit", formatDateTime(patient?.last_visit_date, "N/A")],
-                      ["Attending Physician", patient?.attending_physician || "N/A"],
-                      ["Medications", patient?.current_medications?.join(", ") || "None"],
-                    ]}
-                  />
-                </CollapsibleCard>
+        <div style={styles.mainGrid}>
+          <section style={styles.leftColumn}>
+            <CollapsibleCard
+              title="Patient Info"
+              expanded={expandedPanels[PANEL_KEYS.patientInfo]}
+              onToggle={() => togglePanel(PANEL_KEYS.patientInfo)}
+            >
+              <InfoList rows={patientInfoRows} emptyText="No patient information available." />
+            </CollapsibleCard>
 
-                <CollapsibleCard
-                  title="Vitals"
-                  expanded={expandedPanels[PANEL_KEYS.vitals]}
-                  onToggle={() => togglePanel(PANEL_KEYS.vitals)}
-                >
-                  <ChipGrid
-                    data={patient?.vitals}
-                    positiveLabel="Value"
-                    negativeLabel="N/A"
-                    positiveTone="neutral"
-                    negativeTone="neutral"
-                    formatter={formatKey}
-                  />
-                </CollapsibleCard>
-
-                <CollapsibleCard
-                  title="Medical History"
-                  expanded={expandedPanels[PANEL_KEYS.medicalHistory]}
-                  onToggle={() => togglePanel(PANEL_KEYS.medicalHistory)}
-                >
-                  {Array.isArray(patient?.patient_record) && patient.patient_record.length > 0 ? (
-                    <ul style={styles.previewList}>
-                      {patient.patient_record.map((item, index) => (
-                        <li key={`${item}-${index}`} style={styles.previewItem}>
-                          {item}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <ChipGrid
-                      data={patient?.medical_history}
-                      positiveLabel="Yes"
-                      negativeLabel="No"
-                      positiveTone="warm"
-                      negativeTone="cool"
-                      formatter={formatKey}
-                    />
+            {lifestyleData && (
+              <div style={styles.lifestyleCard}>
+                <h3 style={styles.lifestyleTitle}>Lifestyle & Habits</h3>
+                <div style={styles.lifestyleBadges}>
+                  {lifestyleData.smoking && (
+                    <div style={styles.lifestyleBadge}>
+                      <Cigarette size={14} />
+                      <span>Smoking</span>
+                    </div>
                   )}
-                </CollapsibleCard>
+                  {lifestyleData.alcohol && (
+                    <div style={styles.lifestyleBadge}>
+                      <Wine size={14} />
+                      <span>Alcohol Use</span>
+                    </div>
+                  )}
+                  {lifestyleData.diet && (
+                    <div style={{ ...styles.lifestyleBadge, ...styles.lifestyleBadgeAlt }}>
+                      <Utensils size={14} />
+                      <span>{lifestyleData.diet}</span>
+                    </div>
+                  )}
+                  {lifestyleData.physical_activity && (
+                    <div style={{ ...styles.lifestyleBadge, ...styles.lifestyleBadgeAlt }}>
+                      <Zap size={14} />
+                      <span>{lifestyleData.physical_activity}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
-                <CollapsibleCard
-                  title="Family History"
-                  expanded={expandedPanels[PANEL_KEYS.familyHistory]}
-                  onToggle={() => togglePanel(PANEL_KEYS.familyHistory)}
-                >
-                  <ChipGrid
-                    data={patient?.family_history}
-                    positiveLabel="Risk"
-                    negativeLabel="None"
-                    positiveTone="warm"
-                    negativeTone="cool"
-                    formatter={formatKey}
-                  />
-                </CollapsibleCard>
-              </section>
+            <CollapsibleCard
+              title="Vitals"
+              expanded={expandedPanels[PANEL_KEYS.vitals]}
+              onToggle={() => togglePanel(PANEL_KEYS.vitals)}
+            >
+              <ChipGrid data={vitals} formatter={formatKey} emptyText="No vitals available." />
+            </CollapsibleCard>
 
-              <section style={styles.rightColumn}>
+            <CollapsibleCard
+              title="Medical History"
+              expanded={expandedPanels[PANEL_KEYS.medicalHistory]}
+              onToggle={() => togglePanel(PANEL_KEYS.medicalHistory)}
+            >
+              {medicalHistoryItems.length > 0 ? (
+                <div style={styles.historyTagGrid}>
+                  {medicalHistoryItems.map((item) => (
+                    <div key={item} style={styles.historyTag}>
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={styles.emptyText}>No medical history available.</p>
+              )}
+            </CollapsibleCard>
+
+            {Object.keys(familyHistory).length > 0 && (
+              <CollapsibleCard
+                title="Family History"
+                expanded={expandedPanels[PANEL_KEYS.familyHistory]}
+                onToggle={() => togglePanel(PANEL_KEYS.familyHistory)}
+              >
+                <ChipGrid
+                  data={familyHistory}
+                  positiveLabel="Risk"
+                  negativeLabel="None"
+                  positiveTone="warm"
+                  negativeTone="cool"
+                  formatter={formatKey}
+                />
+              </CollapsibleCard>
+            )}
+          </section>
+
+          <section style={styles.rightColumn}>
+            {hasAssessment ? (
+              <>
                 <div style={styles.recommendationPreview}>
                   <div style={styles.previewHeader}>
                     <h2 style={styles.previewTitle}>Key Recommendations</h2>
@@ -420,27 +484,28 @@ export default function PatientDetail() {
                 </div>
 
                 <ResultTabs data={assessment} />
-              </section>
-            </div>
-          </div>
-        ) : (
-          <div style={styles.noAssessment}>
-            <div style={styles.noAssessmentIcon}>
-              <Activity size={34} />
-            </div>
-            <h2 style={styles.noAssessmentTitle}>No Assessment Yet</h2>
-            <p style={styles.noAssessmentSub}>
-              {canRunAssessment
-                ? "Run an assessment to generate risk score, confidence, and care recommendations."
-                : "Your care team has not generated an assessment yet."}
-            </p>
-            {canRunAssessment && (
-              <button style={styles.assessBtn} onClick={runAssessment} disabled={assessing}>
-                {assessing ? "Assessing..." : "Run Assessment"}
-              </button>
+              </>
+            ) : (
+              <div style={styles.noAssessment}>
+                <div style={styles.noAssessmentIcon}>
+                  <Activity size={34} />
+                </div>
+                <h2 style={styles.noAssessmentTitle}>No Assessment Yet</h2>
+                <p style={styles.noAssessmentSub}>
+                  {canRunAssessment
+                    ? "This patient profile is fully available. Run an assessment to generate the risk score, breakdown, and care guidance."
+                    : "Your care team has not generated an assessment yet."}
+                </p>
+                {canRunAssessment && (
+                  <button style={styles.assessBtn} onClick={runAssessment} disabled={assessing}>
+                    {assessing ? "Assessing..." : "Run Assessment"}
+                  </button>
+                )}
+              </div>
             )}
-          </div>
-        )}
+          </section>
+        </div>
+
         {showAppointmentModal && (
           <div style={styles.modalOverlay}>
             <div style={styles.modalCard}>
@@ -509,7 +574,11 @@ function CollapsibleCard({ title, expanded, onToggle, children }) {
   );
 }
 
-function InfoList({ rows }) {
+function InfoList({ rows, emptyText = "No data available." }) {
+  if (!rows.length) {
+    return <p style={styles.emptyText}>{emptyText}</p>;
+  }
+
   return (
     <div style={styles.infoList}>
       {rows.map(([label, value]) => (
@@ -529,18 +598,19 @@ function ChipGrid({
   positiveTone = "neutral",
   negativeTone = "neutral",
   formatter = (value) => value,
+  emptyText = "No data available.",
 }) {
-  const entries = data ? Object.entries(data) : [];
+  const entries = Object.entries(data || {});
 
   if (entries.length === 0) {
-    return <p style={styles.emptyText}>No data available.</p>;
+    return <p style={styles.emptyText}>{emptyText}</p>;
   }
 
   return (
     <div style={styles.chipGrid}>
       {entries.map(([key, rawValue]) => {
         const isBoolean = typeof rawValue === "boolean";
-        const positive = isBoolean ? rawValue : rawValue !== null && rawValue !== undefined && String(rawValue) !== "";
+        const positive = isBoolean ? rawValue : true;
         const tone = positive ? positiveTone : negativeTone;
         const valueLabel = isBoolean ? (positive ? positiveLabel : negativeLabel) : String(rawValue);
 
@@ -552,6 +622,15 @@ function ChipGrid({
         );
       })}
     </div>
+  );
+}
+
+function compactRecord(record = {}) {
+  return Object.fromEntries(
+    Object.entries(record || {}).filter(([, value]) => {
+      if (typeof value === "boolean") return true;
+      return Boolean(cleanText(value));
+    })
   );
 }
 
@@ -579,14 +658,15 @@ function formatKey(key) {
 }
 
 const styles = {
-  layout: { display: "flex", minHeight: "100vh", background: "#f7fbfd" },
+  layout: { display: "flex", height: "100vh", overflow: "hidden", background: "#f7fbfd" },
   main: {
     flex: 1,
+    minWidth: 0,
+    overflowY: "auto",
     padding: "18px 22px",
     display: "flex",
     flexDirection: "column",
     gap: "12px",
-    minWidth: 0,
   },
   header: {
     display: "flex",
@@ -760,7 +840,7 @@ const styles = {
   },
   dataChipKey: { fontSize: "10px", fontWeight: 700 },
   dataChipValue: { fontSize: "11px", fontWeight: 700 },
-  emptyText: { color: "#94a3b8", fontSize: "12px" },
+  emptyText: { color: "#94a3b8", fontSize: "12px", margin: 0 },
   recommendationPreview: {
     background: "#ffffff",
     border: "1px solid #dbe7ee",
@@ -779,6 +859,24 @@ const styles = {
   },
   previewList: { margin: "8px 0 0 16px", display: "flex", flexDirection: "column", gap: "6px" },
   previewItem: { color: "#2d4a5b", fontSize: "12px", lineHeight: 1.5 },
+  historyTagGrid: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+  },
+  historyTag: {
+    display: "inline-flex",
+    alignItems: "center",
+    minHeight: "34px",
+    padding: "8px 14px",
+    borderRadius: "999px",
+    background: "#eaf6fb",
+    color: "#123f5a",
+    fontSize: "13px",
+    fontWeight: 700,
+    lineHeight: 1.2,
+    boxShadow: "inset 0 0 0 1px #d8eaf3",
+  },
   noAssessment: {
     background: "#ffffff",
     border: "1px solid #dbe7ee",
@@ -789,6 +887,8 @@ const styles = {
     alignItems: "center",
     textAlign: "center",
     gap: "10px",
+    minHeight: "240px",
+    justifyContent: "center",
   },
   noAssessmentIcon: {
     width: "68px",
@@ -813,7 +913,6 @@ const styles = {
   },
   centerSub: { marginTop: "10px", color: "#6b8799", fontSize: "12px" },
   errorText: { color: "#be123c", marginBottom: "10px" },
-
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -889,5 +988,92 @@ const styles = {
     padding: "8px 12px",
     boxShadow: "0 4px 14px rgba(22, 96, 135, 0.2)",
     transition: "opacity 180ms ease",
+  },
+  disclaimerBox: {
+    marginBottom: "20px",
+    padding: "12px 14px",
+    background: "#fef3c7",
+    border: "1px solid #fde68a",
+    borderRadius: "10px",
+  },
+  disclaimerText: {
+    margin: 0,
+    fontSize: "12px",
+    color: "#92400e",
+    fontWeight: 500,
+    lineHeight: 1.5,
+  },
+  riskOverviewPanel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  overviewBadges: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  overviewSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+  },
+  overviewLabel: {
+    margin: 0,
+    fontSize: "11px",
+    fontWeight: 700,
+    color: "#6b8799",
+    textTransform: "uppercase",
+    letterSpacing: "0.4px",
+  },
+  overviewItem: {
+    margin: 0,
+    fontSize: "12px",
+    color: "#334155",
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "8px",
+  },
+  overviewItemLabel: {
+    fontWeight: 700,
+    color: "#6b8799",
+  },
+  lifestyleCard: {
+    background: "#ffffff",
+    border: "1px solid #dbe7ee",
+    borderRadius: "12px",
+    padding: "12px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+  },
+  lifestyleTitle: {
+    margin: 0,
+    fontSize: "13px",
+    fontWeight: 700,
+    color: "#274355",
+  },
+  lifestyleBadges: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+  },
+  lifestyleBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "6px 10px",
+    borderRadius: "8px",
+    background: "#fff1f2",
+    border: "1px solid #fecdd3",
+    color: "#9f1239",
+    fontSize: "12px",
+    fontWeight: 600,
+  },
+  lifestyleBadgeAlt: {
+    background: "#f0fdf4",
+    border: "1px solid #bbf7d0",
+    color: "#166534",
   },
 };

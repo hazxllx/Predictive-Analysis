@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Activity, Cigarette, Search, Wine } from "lucide-react";
+import { Activity, Cigarette, Search, Salad, Wine } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/axios";
 import Sidebar from "../components/Sidebar";
@@ -7,6 +7,10 @@ import { useAuth } from "../context/AuthContext";
 import "./Patients.css";
 import { formatDateTime } from "../utils/formatDateTime";
 import { fetchWithCache } from "../api/cachedFetch";
+import { setCachedQuery } from "../api/queryCache";
+import { normalizePatients } from "../utils/normalizePatients";
+import { normalizeAssessment } from "../utils/normalizeAssessment";
+import { extractConditionTags } from "../utils/conditionExtraction";
 
 const RISK_CLASS_MAP = {
   Critical: "patient-registry__badge--critical",
@@ -18,6 +22,7 @@ const RISK_CLASS_MAP = {
 const LIFESTYLE_ICON_MAP = {
   smoking: Cigarette,
   alcohol: Wine,
+  diet: Salad,
   activity: Activity,
 };
 
@@ -42,42 +47,37 @@ export default function Patients() {
           },
         });
 
-        const patientList = Array.isArray(patientResponse?.data)
-          ? patientResponse.data
-          : Array.isArray(patientResponse)
-          ? patientResponse
-          : [];
-
+        const patientList = normalizePatients(patientResponse);
         setDataSource(patientResponse?.source === "fallback" ? "fallback" : "pms");
         setPatients(patientList);
 
-        const { data: recordsData } = await fetchWithCache({
-          key: ["health-records"],
-          fetcher: async () => {
-            const { data } = await api.get("/api/v1/external/health-records");
-            return data;
-          },
+        patientList.forEach((patient) => {
+          setCachedQuery(["patient", patient.patient_id], patient);
         });
 
-        const records = Array.isArray(recordsData?.data?.records)
-          ? recordsData.data.records
-          : Array.isArray(recordsData?.data?.healthRecords)
-          ? recordsData.data.healthRecords
-          : Array.isArray(recordsData?.data)
-          ? recordsData.data
-          : Array.isArray(recordsData)
-          ? recordsData
-          : [];
+        const assessmentEntries = await Promise.all(
+          patientList.map(async (patient) => {
+            try {
+              const { data } = await api.get(
+                `/api/v1/predictive-analysis/risk-assessment/user?id=${patient.patient_id}`
+              );
+              const normalized = normalizeAssessment(data?.data ?? data);
+              if (!normalized) return null;
 
-        const assessmentMap = {};
-        records.forEach((record) => {
-          const patientId = String(record?.patient_id || record?.id || "");
-          if (!patientId) return;
-          if (assessmentMap[patientId]) return;
-          assessmentMap[patientId] = record;
-        });
+              setCachedQuery(["assessment", patient.patient_id], normalized);
+              return [patient.patient_id, normalized];
+            } catch {
+              return null;
+            }
+          })
+        );
 
-        setAssessments(assessmentMap);
+        setAssessments(
+          assessmentEntries.filter(Boolean).reduce((acc, [patientId, assessment]) => {
+            acc[patientId] = assessment;
+            return acc;
+          }, {})
+        );
       } catch (error) {
         console.error("Patients load error:", error);
       } finally {
@@ -99,22 +99,19 @@ export default function Patients() {
     });
   }, [patients, search]);
 
-  const openPatient = (patient, assessed) => {
-    console.log("CLICKED PATIENT:", patient);
+  const openPatient = (patient) => {
     const patientId = patient?.patient_id;
     if (!patientId) return;
 
-    if (user?.role === "admin") {
-      navigate(`/admin/patient/${patientId}`);
-      return;
-    }
+    const assessment = assessments[patientId] || null;
+    const path = user?.role === "admin" ? `/admin/patient/${patientId}` : `/patients/${patientId}`;
 
-    if (assessed) {
-      navigate(`/patients/${patientId}`);
-      return;
-    }
-
-    navigate(`/patients/${patientId}/assessment`);
+    navigate(path, {
+      state: {
+        patient,
+        assessment,
+      },
+    });
   };
 
   return (
@@ -126,9 +123,11 @@ export default function Patients() {
           <div className="patient-registry-page__copy">
             <h1 className="patient-registry-page__title">Patient Registry</h1>
             <p className="patient-registry-page__subtitle">
-              <span>{patients.length} {patients.length === 1 ? "patient" : "patients"} from PMS</span>
+              <span>
+                {patients.length} {patients.length === 1 ? "patient" : "patients"} from PMS
+              </span>
               <span aria-hidden="true"> &mdash; </span>
-              <span>Select to run predictive analysis</span>
+              <span>Select to review or run predictive analysis</span>
             </p>
           </div>
 
@@ -170,7 +169,7 @@ export default function Patients() {
                   Using fallback data
                 </span>
                 <span style={{ color: "#7c6f52", fontSize: "13px" }}>
-                  PMS temporarily unavailable — showing fallback data
+                  PMS temporarily unavailable - showing fallback data
                 </span>
               </div>
             )}
@@ -186,7 +185,7 @@ export default function Patients() {
                       key={patientId}
                       patient={patient}
                       assessment={assessments[patientId]}
-                      onOpen={(assessed) => openPatient(patient, assessed)}
+                      onOpen={() => openPatient(patient)}
                     />
                   );
                 })}
@@ -203,16 +202,13 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
   const conditions = getConditions(patient);
   const lifestyleIndicators = getLifestyleIndicators(patient);
   const initials = getInitials(patient.name);
-
-  const effectiveRiskLevel = patient?.risk_level || assessment?.risk_level || null;
-  const effectiveRiskScore = patient?.riskScore ?? patient?.risk_score ?? assessment?.risk_score;
-  const riskScore = formatRiskScore(effectiveRiskScore);
-  const assessed = Boolean(effectiveRiskLevel) && riskScore !== null;
-  const riskLevel = effectiveRiskLevel || "Not assessed";
-  const actionLabel = assessed ? "View Result" : "Assess";
+  const hasAssessment = Boolean(assessment);
+  const riskLevel = assessment?.risk_level || "Not assessed";
+  const riskScore = assessment?.risk_score;
+  const actionLabel = hasAssessment ? "View Result ->" : "Assess ->";
 
   return (
-    <button type="button" className="patient-registry-card" onClick={() => onOpen(assessed)}>
+    <button type="button" className="patient-registry-card" onClick={onOpen}>
       <div className="patient-registry-card__header">
         <div className="patient-registry-card__identity">
           <div className="patient-registry-card__avatar">{initials}</div>
@@ -221,14 +217,21 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
             <h2 className="patient-registry-card__name">{patient.name || "Unknown Patient"}</h2>
             <p className="patient-registry-card__meta">
               <span>{patient.patient_id || "-"}</span>
-              <span aria-hidden="true"> &middot; </span>
-              <span>{patient.age ?? "-"}y</span>
-              <span aria-hidden="true"> &middot; </span>
-              <span>{patient.gender || "-"}</span>
+              {patient.age !== null && patient.age !== undefined && (
+                <>
+                  <span aria-hidden="true"> &middot; </span>
+                  <span>{patient.age}y</span>
+                </>
+              )}
+              {patient.gender && (
+                <>
+                  <span aria-hidden="true"> &middot; </span>
+                  <span>{patient.gender}</span>
+                </>
+              )}
             </p>
           </div>
         </div>
-
       </div>
 
       <div className="patient-registry-card__chips">
@@ -252,7 +255,7 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
           textAlign: "left",
         }}
       >
-        Last Visit: {formatDateTime(patient?.last_visit_date, "N/A")}
+        Last Visit: {formatDateTime(patient?.last_visit_date, "No recorded visit")}
       </div>
 
       <div className="patient-registry-card__lifestyle">
@@ -271,11 +274,15 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
       </div>
 
       <div className="patient-registry-card__footer">
-        {assessed ? (
+        {hasAssessment ? (
           <span className={`patient-registry__badge ${RISK_CLASS_MAP[riskLevel] || ""}`}>
             <span>{riskLevel}</span>
-            <span aria-hidden="true">&nbsp;&middot;&nbsp;</span>
-            <span>{riskScore}</span>
+            {riskScore !== null && riskScore !== undefined && (
+              <>
+                <span aria-hidden="true">&nbsp;&middot;&nbsp;</span>
+                <span>{riskScore}/100</span>
+              </>
+            )}
           </span>
         ) : (
           <span className="patient-registry-card__pending">Not assessed</span>
@@ -299,64 +306,46 @@ function getInitials(name = "") {
 }
 
 function getConditions(patient) {
-  const mapped = Array.isArray(patient?.patient_record)
-    ? patient.patient_record
-        .map((c) => String(c || "").trim())
-        .filter(Boolean)
-        .map((c) => c.charAt(0).toUpperCase() + c.slice(1))
-    : [];
-
-  if (mapped.length > 0) {
-    return [...new Set(mapped)].slice(0, 3);
-  }
-
-  const history = patient?.medical_history || {};
-  const chips = [];
-
-  if (history.heart_disease || history.hypertension) chips.push("Cardiovascular");
-  if (history.hypertension) chips.push("Hypertension");
-  if (history.diabetes) chips.push("Metabolic", "Diabetes");
-  if (history.asthma || history.copd) chips.push("Respiratory");
-  if (history.asthma) chips.push("Asthma");
-  if (history.copd) chips.push("COPD");
-  if (history.kidney_disease) chips.push("Renal");
-  if (history.cancer) chips.push("Cancer");
-  if (history.stroke) chips.push("Neurologic");
-  if (history.anxiety || history.depression) chips.push("Mental");
-  if (history.anxiety) chips.push("Anxiety");
-  if (history.depression) chips.push("Depression");
-
-  return [...new Set(chips)].slice(0, 3);
+  return extractConditionTags(patient, 3);
 }
 
 function getLifestyleIndicators(patient) {
   const lifestyle = patient?.lifestyle || {};
   const indicators = [];
 
+  // Only show smoking if true
   if (lifestyle.smoking) {
-    indicators.push({ type: "smoking", label: "Smoker", tone: "warm" });
+    indicators.push({
+      type: "smoking",
+      label: "Smoking",
+      tone: "warm",
+    });
   }
 
+  // Only show alcohol if true
   if (lifestyle.alcohol) {
-    indicators.push({ type: "alcohol", label: "Alcohol", tone: "accent" });
+    indicators.push({
+      type: "alcohol",
+      label: "Alcohol Use",
+      tone: "accent",
+    });
   }
 
-  indicators.push({
-    type: "activity",
-    label: formatActivity(lifestyle.physical_activity || "active"),
-    tone: "muted",
-  });
+  if (lifestyle.physical_activity) {
+    indicators.push({
+      type: "activity",
+      label: lifestyle.physical_activity,
+      tone: "cool",
+    });
+  }
 
-  return indicators;
-}
+  if (lifestyle.diet) {
+    indicators.push({
+      type: "diet",
+      label: lifestyle.diet,
+      tone: "cool",
+    });
+  }
 
-function formatActivity(activity) {
-  const value = String(activity || "").trim().toLowerCase();
-  if (!value) return "Active";
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatRiskScore(score) {
-  const numericScore = Number(score);
-  return Number.isFinite(numericScore) ? `${Math.round(numericScore)}/100` : null;
+  return indicators.slice(0, 4);
 }

@@ -4,9 +4,9 @@ import Sidebar from "./Sidebar";
 
 export default function NotLinkedState({
   title = "You're not connected yet",
-  description = "We couldn’t find your health record in our system.",
-  explanation = "Your account is created, but your patient profile hasn’t been linked yet.",
-  primaryText = "Link my patient record →",
+  description = "No PMS patient record linked yet.",
+  explanation = "Your account is active, but no PMS patient profile has been linked to it yet.",
+  primaryText = "Link my patient record ->",
   onPrimary,
   secondary = "If you already have a record, contact your provider.",
 }) {
@@ -39,11 +39,14 @@ export default function NotLinkedState({
 const styles = {
   layout: {
     display: "flex",
-    minHeight: "100vh",
+    height: "100vh",
+    overflow: "hidden",
     background: "#f5f8fb",
   },
   main: {
     flex: 1,
+    minWidth: 0,
+    overflowY: "auto",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",

@@ -52,7 +52,7 @@ function extractHealthRecords(data) {
 }
 
 export default function PatientDashboard() {
-  const { user } = useAuth();
+  const { user, syncUser } = useAuth();
 
   const [patient, setPatient] = useState(null);
   const [latestAssessment, setLatestAssessment] = useState(null);
@@ -123,6 +123,10 @@ export default function PatientDashboard() {
       });
       console.log("[PatientDashboard] /patients/me response:", meResponse);
 
+      if (meResponse?.user?.id && meResponse.user.patient_id !== user?.patient_id) {
+        syncUser(meResponse.user);
+      }
+
       if (meResponse?.linked && meResponse?.data) {
         setPatient(meResponse.data);
         const pid = meResponse.data.id || meResponse.data.patient_id || user?.patient_id || null;
@@ -183,7 +187,7 @@ export default function PatientDashboard() {
       } else {
         setLinkInfo({
           type: "none",
-          message: "No matching PMS profile found for your account name yet.",
+          message: "No PMS patient record linked yet.",
         });
       }
     } catch (err) {
@@ -409,7 +413,7 @@ export default function PatientDashboard() {
     return (
       <div className="dashboard-shell">
         <Sidebar />
-        <main className="dashboard-main">
+        <main className="dashboard-main" style={{ padding: "1rem 1.15rem" }}>
           <div className="hero-card">Loading your dashboard...</div>
         </main>
       </div>
@@ -420,7 +424,7 @@ export default function PatientDashboard() {
     return (
       <div className="dashboard-shell">
         <Sidebar />
-        <main className="dashboard-main">
+        <main className="dashboard-main" style={{ padding: "1rem 1.15rem" }}>
           <div className="hero-card">{dashboardError}</div>
         </main>
       </div>
@@ -440,9 +444,12 @@ export default function PatientDashboard() {
 
   if (!hasAssessment) {
     return (
-      <div className="dashboard-shell" style={{ display: "flex", minHeight: "100vh", background: "#f5f8fb" }}>
+      <div className="dashboard-shell">
         <Sidebar />
-        <main style={{ flex: 1, padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto" }}>
+        <main
+          className="dashboard-main"
+          style={{ padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto", width: "100%" }}
+        >
           <section
             style={{
               background: "#ffffff",
@@ -484,7 +491,7 @@ export default function PatientDashboard() {
   }
 
   return (
-    <div className="dashboard-shell" style={{ display: "flex", minHeight: "100vh", background: "#f5f8fb" }}>
+    <div className="dashboard-shell">
       <style>
         {`
           @keyframes scorePulseIn {
@@ -495,7 +502,10 @@ export default function PatientDashboard() {
       </style>
 
       <Sidebar />
-      <main style={{ flex: 1, padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto" }}>
+      <main
+        className="dashboard-main"
+        style={{ padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto", width: "100%" }}
+      >
         <section
           style={{
             background: "#ffffff",

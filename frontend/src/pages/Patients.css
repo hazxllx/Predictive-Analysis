@@ -1,6 +1,7 @@
 .patient-registry-page {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: #eef6f7;
 }
 

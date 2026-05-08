@@ -7,3 +7,11 @@
 - [x] Ensure connection source of truth remains `/patients/me` only
 - [x] Prevent blank render and duplicate/overlapping states
 - [ ] Run verification checks
+
+## Current Task: Patient Card + Patient Detail Stabilization
+
+- [ ] Harden PMS normalization (`frontend/src/utils/normalizePatients.js`)
+- [ ] Fix Patient Detail assessment parsing/state (`frontend/src/pages/PatientDetail.jsx`)
+- [ ] Fix Patient Card rendering safety (`frontend/src/components/PatientCard.jsx`)
+- [ ] Fix Patients registry condition hydration (`frontend/src/pages/Patients.jsx`)
+- [ ] Run frontend verification build

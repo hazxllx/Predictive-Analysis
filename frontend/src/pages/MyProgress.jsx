@@ -75,7 +75,7 @@ function buildTrendChart(items, width = 460, height = 180, padX = 28, padY = 24)
 }
 
 export default function MyProgress() {
-  const { user } = useAuth();
+  const { user, syncUser } = useAuth();
 
   const [patient, setPatient] = useState(null);
   const [assessments, setAssessments] = useState([]);
@@ -97,6 +97,10 @@ export default function MyProgress() {
         });
         console.log("[MyProgress] /patients/me response:", meResponse);
 
+        if (meResponse?.user?.id && meResponse.user.patient_id !== user?.patient_id) {
+          syncUser(meResponse.user);
+        }
+
         if (!(meResponse?.linked && meResponse?.data)) {
           setPatient(null);
           setAssessments([]);
@@ -110,7 +114,7 @@ export default function MyProgress() {
           } else {
             setLinkInfo({
               type: "none",
-              message: "No matching PMS profile found for your account name yet.",
+              message: "No PMS patient record linked yet.",
             });
           }
           return;
@@ -393,11 +397,14 @@ export default function MyProgress() {
 const styles = {
   layout: {
     display: "flex",
-    minHeight: "100vh",
+    height: "100vh",
+    overflow: "hidden",
     background: "#f5f8fb",
   },
   main: {
     flex: 1,
+    minWidth: 0,
+    overflowY: "auto",
     maxWidth: "1120px",
     width: "100%",
     margin: "0 auto",

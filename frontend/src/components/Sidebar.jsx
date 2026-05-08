@@ -125,8 +125,14 @@ export default function Sidebar() {
 
 const styles = {
   sidebar: {
-    width: "240px",
+    width: "var(--sidebar-w)",
     height: "100vh",
+    position: "sticky",
+    top: 0,
+    left: 0,
+    overflow: "hidden",
+    alignSelf: "flex-start",
+    zIndex: 20,
     background: "white",
     borderRight: "1px solid #e2e8f0",
     display: "flex",
