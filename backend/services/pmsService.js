@@ -16,6 +16,10 @@ const cache = {
   patients: { data: null, updatedAt: 0 },
   records: { data: null, updatedAt: 0 },
 };
+const inFlight = {
+  patients: null,
+  records: null,
+};
 
 const CONDITION_PATTERNS = {
   cardiovascular: /\b(hypertension|heart|cardio|stroke|arrhythmia|coronary|angina|myocardial|heart failure)\b/i,
@@ -158,8 +162,6 @@ function deriveAttendingPhysician(patient = {}, records = []) {
     patient?.attendingPhysician ||
     patient?.provider ||
     patient?.physician ||
-    patient?.doctor_name ||
-    patient?.doctorName ||
     null;
 
   if (cleanText(direct)) return cleanText(direct);
@@ -171,10 +173,7 @@ function deriveAttendingPhysician(patient = {}, records = []) {
         record?.attending_physician ||
         record?.attendingPhysician ||
         record?.physician ||
-        record?.doctor_name ||
-        record?.doctorName ||
         record?.details?.attendingPhysician ||
-        record?.details?.doctor ||
         null
     )
     .find((value) => cleanText(value));
@@ -388,21 +387,30 @@ async function fetchAllHealthRecords(force = false) {
   if (!force && isCacheFresh(cache.records)) {
     return cache.records.data;
   }
-
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const response = await pmsClient.get(`/health-records?page=1&limit=${PMS_PAGE_LIMIT}`);
-      return setCache("records", extractHealthRecordsFromResponse(response));
-    } catch (error) {
-      console.error(`PMS health-records error (attempt ${attempt}):`, error.response?.data || error.message);
-
-      if (attempt === 2) {
-        return [];
-      }
-    }
+  if (!force && inFlight.records) {
+    return inFlight.records;
   }
 
-  return [];
+  inFlight.records = (async () => {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const response = await pmsClient.get(`/health-records?page=1&limit=${PMS_PAGE_LIMIT}`);
+        return setCache("records", extractHealthRecordsFromResponse(response));
+      } catch (error) {
+        console.error(`PMS health-records error (attempt ${attempt}):`, error.response?.data || error.message);
+
+        if (attempt === 2) {
+          return [];
+        }
+      }
+    }
+
+    return [];
+  })().finally(() => {
+    inFlight.records = null;
+  });
+
+  return inFlight.records;
 }
 
 async function fetchHealthRecords(patientId = null, options = {}) {
@@ -421,39 +429,48 @@ async function fetchAllPatients(options = {}) {
   if (!options?.force && isCacheFresh(cache.patients)) {
     return cache.patients.data;
   }
-
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const [response, records] = await Promise.all([
-        pmsClient.get(`/patients?page=1&limit=${PMS_PAGE_LIMIT}`),
-        fetchAllHealthRecords(options?.force),
-      ]);
-
-      const rawPatients = extractPatientsFromResponse(response);
-      const recordsByPatient = groupRecordsByPatient(records);
-
-      const normalizedPatients = rawPatients
-        .map((rawPatient) => {
-          try {
-            const patientId = cleanText(rawPatient?.patient_id);
-            return mapPatient(rawPatient, recordsByPatient.get(patientId) || []);
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean);
-
-      return setCache("patients", normalizedPatients);
-    } catch (error) {
-      console.error(`PMS patients error (attempt ${attempt}):`, error.response?.data || error.message);
-
-      if (attempt === 2) {
-        return [];
-      }
-    }
+  if (!options?.force && inFlight.patients) {
+    return inFlight.patients;
   }
 
-  return [];
+  inFlight.patients = (async () => {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const [response, records] = await Promise.all([
+          pmsClient.get(`/patients?page=1&limit=${PMS_PAGE_LIMIT}`),
+          fetchAllHealthRecords(options?.force),
+        ]);
+
+        const rawPatients = extractPatientsFromResponse(response);
+        const recordsByPatient = groupRecordsByPatient(records);
+
+        const normalizedPatients = rawPatients
+          .map((rawPatient) => {
+            try {
+              const patientId = cleanText(rawPatient?.patient_id);
+              return mapPatient(rawPatient, recordsByPatient.get(patientId) || []);
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+
+        return setCache("patients", normalizedPatients);
+      } catch (error) {
+        console.error(`PMS patients error (attempt ${attempt}):`, error.response?.data || error.message);
+
+        if (attempt === 2) {
+          return [];
+        }
+      }
+    }
+
+    return [];
+  })().finally(() => {
+    inFlight.patients = null;
+  });
+
+  return inFlight.patients;
 }
 
 async function fetchPatient(patientId, options = {}) {

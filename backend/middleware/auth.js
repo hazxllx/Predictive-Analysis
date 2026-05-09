@@ -52,11 +52,6 @@ const requireApiKey = (req, res, next) => {
   next();
 };
 
-const staffOnly = (req, res, next) => {
-  if (req.user && (req.user.role === "staff" || req.user.role === "admin")) return next();
-  return res.status(403).json({ message: "Staff access only" });
-};
-
 const adminOnly = (req, res, next) => {
   if (req.user && req.user.role === "admin") return next();
   return res.status(403).json({ message: "Admin access only" });
@@ -65,4 +60,4 @@ const adminOnly = (req, res, next) => {
 // Backward compatibility alias
 const protect = requireAuth;
 
-module.exports = { requireAuth, requireApiKey, protect, staffOnly, adminOnly };
+module.exports = { requireAuth, requireApiKey, protect, adminOnly };

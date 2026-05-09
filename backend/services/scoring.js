@@ -70,6 +70,7 @@ function pushUnique(target, value) {
 }
 
 function getRiskLevel(score) {
+  // Documented subsystem thresholds: Low 0-19, Moderate 20-44, High 45-69, Critical 70-100.
   if (score >= 70) return "Critical";
   if (score >= 45) return "High";
   if (score >= 20) return "Moderate";
@@ -241,30 +242,166 @@ function parseBloodPressure(value) {
   return { systolic, diastolic };
 }
 
+/**
+ * Calculate BMI (kg/m²) from weight (kg) and height (cm/m)
+ * Returns null if insufficient data
+ */
+function calculateBMI(weight, height) {
+  const w = toNumber(weight);
+  const h = toNumber(height);
+
+  if (!w || !h) return null;
+
+  // Assume height is in cm if > 100, otherwise assume meters
+  const heightInMeters = h > 100 ? h / 100 : h;
+
+  if (heightInMeters <= 0) return null;
+
+  return w / (heightInMeters * heightInMeters);
+}
+
+/**
+ * Detect health risk patterns from multiple vitals
+ * Returns combined risk contribution
+ */
 function getVitalsContributions(vitals = {}) {
   const contributions = [];
   const { systolic, diastolic } = parseBloodPressure(vitals?.blood_pressure);
 
-  if ((systolic && systolic >= 140) || (diastolic && diastolic >= 90)) {
-    addContribution(contributions, "Elevated blood pressure", "Vitals", 8);
+  // Blood Pressure Analysis
+  if ((systolic && systolic >= 160) || (diastolic && diastolic >= 100)) {
+    addContribution(contributions, "Severe hypertension (≥160/100)", "Vitals", 12);
+  } else if ((systolic && systolic >= 140) || (diastolic && diastolic >= 90)) {
+    addContribution(contributions, "Stage 2 hypertension (140-159/90-99)", "Vitals", 9);
   } else if ((systolic && systolic >= 130) || (diastolic && diastolic >= 85)) {
-    addContribution(contributions, "Borderline blood pressure", "Vitals", 4);
+    addContribution(contributions, "Elevated blood pressure (130-139/85-89)", "Vitals", 5);
   }
 
+  // Heart Rate Analysis
   const heartRate = toNumber(vitals?.heart_rate);
-  if (heartRate && (heartRate > 100 || heartRate < 50)) {
-    addContribution(contributions, "Abnormal heart rate", "Vitals", 3);
+  if (heartRate && heartRate > 100) {
+    addContribution(contributions, "Tachycardia (elevated resting heart rate)", "Vitals", 4);
+  } else if (heartRate && heartRate < 50 && heartRate > 0) {
+    addContribution(contributions, "Bradycardia (low resting heart rate)", "Vitals", 3);
   }
 
+  // Respiratory Rate Analysis
+  const respiratoryRate = toNumber(vitals?.respiratory_rate);
+  if (respiratoryRate && (respiratoryRate > 20 || respiratoryRate < 12)) {
+    addContribution(contributions, "Abnormal respiratory rate", "Vitals", 3);
+  }
+
+  // Temperature Analysis
   const temperature = toNumber(vitals?.temperature);
   if (temperature && temperature >= 100.4) {
     addContribution(contributions, "Elevated temperature", "Vitals", 2);
   }
 
+  // BMI Analysis
+  const bmi = calculateBMI(vitals?.weight, vitals?.height);
+  if (bmi && bmi >= 30) {
+    if (bmi >= 35) {
+      addContribution(contributions, "Class 2 obesity (BMI ≥35)", "Vitals", 9);
+    } else {
+      addContribution(contributions, "Obesity (BMI 30-34.9)", "Vitals", 6);
+    }
+  } else if (bmi && bmi >= 25) {
+    addContribution(contributions, "Overweight (BMI 25-29.9)", "Vitals", 3);
+  }
+
   return contributions;
 }
 
-function getRecommendations({ lifestyle, conditionKeys, riskLevel, vitals }) {
+/**
+ * Detect cardiovascular risk patterns from combined factors
+ * Includes hypertension + lifestyle/BMI interactions
+ */
+function getCardiovascularRiskPatterns(vitals = {}, lifestyle = {}, breakdown = []) {
+  const contributions = [];
+  const { systolic, diastolic } = parseBloodPressure(vitals?.blood_pressure);
+  const hasElevatedBP = (systolic && systolic >= 130) || (diastolic && diastolic >= 85);
+  const hasHighSodium = cleanText(lifestyle?.diet).toLowerCase().includes("salt") || 
+                         cleanText(lifestyle?.diet).toLowerCase().includes("sodium");
+  const bmi = calculateBMI(vitals?.weight, vitals?.height);
+
+  // Hypertension + Smoking (compounded risk)
+  if (hasElevatedBP && lifestyle?.smoking) {
+    addContribution(contributions, "Smoking + hypertension (compounded cardiovascular risk)", "Risk Patterns", 7);
+  }
+
+  // Hypertension + Poor Diet (sodium intake compounded)
+  if (hasElevatedBP && hasHighSodium) {
+    addContribution(contributions, "High sodium intake + hypertension (dietary compounding)", "Risk Patterns", 5);
+  }
+
+  // Hypertension + Sedentary (activity compounding)
+  if (hasElevatedBP && cleanText(lifestyle?.physical_activity).toLowerCase().includes("sedentary")) {
+    addContribution(contributions, "Sedentary lifestyle + hypertension (activity compounding)", "Risk Patterns", 5);
+  }
+
+  // Obesity + Hypertension
+  if (bmi && bmi >= 30 && hasElevatedBP) {
+    addContribution(contributions, "Obesity + hypertension (metabolic compounding)", "Risk Patterns", 6);
+  }
+
+  // Tachycardia + Hypertension
+  const hr = toNumber(vitals?.heart_rate);
+  if (hr && hr > 100 && hasElevatedBP) {
+    addContribution(contributions, "Elevated heart rate + hypertension (cardiac strain)", "Risk Patterns", 4);
+  }
+
+  return contributions;
+}
+
+/**
+ * Detect metabolic risk patterns
+ * Includes obesity, lifestyle, checkup frequency
+ */
+function getMetabolicRiskPatterns(vitals = {}, lifestyle = {}, lastVisitDate = null) {
+  const contributions = [];
+  const bmi = calculateBMI(vitals?.weight, vitals?.height);
+  const poorDiet = cleanText(lifestyle?.diet).toLowerCase().includes("poor") ||
+                   cleanText(lifestyle?.diet).toLowerCase().includes("processed") ||
+                   cleanText(lifestyle?.diet).toLowerCase().includes("high sugar");
+  const sedentary = cleanText(lifestyle?.physical_activity).toLowerCase().includes("sedentary");
+
+  // Obesity + Poor Diet (metabolic compound)
+  if (bmi && bmi >= 30 && poorDiet) {
+    addContribution(contributions, "Obesity + poor diet (metabolic compounding)", "Risk Patterns", 8);
+  }
+
+  // Obesity + Sedentary (compounded inactivity)
+  if (bmi && bmi >= 30 && sedentary) {
+    addContribution(contributions, "Obesity + sedentary lifestyle (inactivity compounding)", "Risk Patterns", 7);
+  }
+
+  // Poor Diet + Sedentary (lifestyle compounding)
+  if (poorDiet && sedentary) {
+    addContribution(contributions, "Poor diet + sedentary lifestyle (behavioral compounding)", "Risk Patterns", 6);
+  }
+
+  // Checkup Compliance (derived from last visit)
+  if (lastVisitDate) {
+    const lastVisit = new Date(lastVisitDate);
+    const monthsSinceVisit = (new Date() - lastVisit) / (1000 * 60 * 60 * 24 * 30);
+    
+    if (monthsSinceVisit > 24) {
+      addContribution(contributions, "No checkup in 2+ years (poor preventive care)", "Preventive Care", 7);
+    } else if (monthsSinceVisit > 12) {
+      addContribution(contributions, "No checkup in 12+ months (irregular monitoring)", "Preventive Care", 4);
+    } else if (monthsSinceVisit > 6) {
+      addContribution(contributions, "Last checkup 6+ months ago", "Preventive Care", 2);
+    }
+  }
+
+  return contributions;
+}
+
+/**
+ * Generate medically-justified recommendations based on detected risk patterns
+ * Recommendations are severity-weighted and prioritized
+ */
+function getRecommendations({ lifestyle, conditionKeys, riskLevel, vitals, breakdown = [] }) {
   const recommendations = [];
   const seen = new Set();
 
@@ -275,81 +412,136 @@ function getRecommendations({ lifestyle, conditionKeys, riskLevel, vitals }) {
     recommendations.push(text);
   };
 
-  if (lifestyle.smoking) {
-    add("Stop smoking or reduce to zero cigarettes per day");
-    add("Consider nicotine replacement therapy or support programs");
+  // CRITICAL PRIORITY: Hypertension + Cardiovascular
+  const hasHypertension = breakdown?.some((item) => 
+    item?.label?.toLowerCase().includes("hypertension") || 
+    item?.label?.toLowerCase().includes("blood pressure")
+  );
+
+  if (hasHypertension && conditionKeys.includes("cardiovascular")) {
+    add("Schedule immediate cardiovascular assessment with your primary care provider");
+    add("Monitor and track your blood pressure daily at home");
+    add("Reduce salt intake to less than 2,300mg per day");
+  } else if (hasHypertension) {
+    add("Monitor blood pressure regularly and track readings");
+    add("Reduce sodium intake significantly");
+    add("Increase aerobic exercise to 30 minutes most days");
+  }
+
+  // CRITICAL PRIORITY: Obesity + Metabolic
+  const hasObesity = breakdown?.some((item) => 
+    item?.label?.toLowerCase().includes("obesity") ||
+    item?.label?.toLowerCase().includes("bmi")
+  );
+
+  if (hasObesity && conditionKeys.includes("metabolic")) {
+    add("Work with an endocrinologist and dietitian for weight management plan");
+    add("Monitor blood glucose levels regularly");
+    add("Increase physical activity gradually to 150 minutes per week");
+  } else if (hasObesity) {
+    add("Aim for gradual weight loss of 5-10% over 3-6 months");
+    add("Increase physical activity to 150 minutes per week");
+    add("Reduce processed food and added sugar intake");
+  }
+
+  // SMOKING: Always prioritized
+  if (lifestyle?.smoking) {
+    add("Smoking cessation is the single most impactful change you can make");
+    add("Consider nicotine replacement therapy or ask your doctor about cessation programs");
     add("Avoid secondhand smoke exposure");
   }
 
-  if (lifestyle.alcohol) {
-    add("Reduce alcohol consumption to safe limits");
-    add("Seek professional support if alcohol reduction is difficult");
+  // ALCOHOL: Risk-weighted
+  if (lifestyle?.alcohol) {
+    if (riskLevel === "Critical" || riskLevel === "High") {
+      add("Eliminate or significantly reduce alcohol consumption");
+    } else {
+      add("Limit alcohol to moderate levels (≤2 drinks/day for men, ≤1 for women)");
+    }
+    add("Seek professional support if reducing alcohol is difficult");
   }
 
-  if (lifestyle.diet.category === "poor") {
-    add("Reduce sodium intake to less than 2,300mg per day");
-    add("Increase fruits, vegetables, and whole grains");
-    add("Avoid processed and fried foods");
+  // POOR DIET: Pattern-based
+  if (lifestyle?.diet?.category === "poor") {
+    add("Increase consumption of vegetables, fruits, and whole grains");
+    add("Avoid fried and processed foods");
+    add("Replace sugary beverages with water");
+    add("Consider consulting with a registered dietitian");
+  } else if (lifestyle?.diet?.category === "average") {
+    add("Continue improving dietary choices toward more whole foods");
+    add("Reduce intake of added sugars and processed ingredients");
   }
 
-  if (lifestyle.physicalActivity.category === "sedentary") {
-    add("Aim for 150 minutes of moderate aerobic activity per week");
+  // SEDENTARY LIFESTYLE: Progressive recommendations
+  if (lifestyle?.physicalActivity?.category === "sedentary") {
+    if (riskLevel === "Critical" || riskLevel === "High") {
+      add("Start with low-impact activities like walking 15-20 minutes daily");
+      add("Gradually increase to 150 minutes of moderate activity per week");
+    } else {
+      add("Aim for 150 minutes of moderate aerobic activity per week");
+      add("Add resistance training 2 days per week");
+    }
     add("Break up prolonged sitting with movement every hour");
-  } else if (lifestyle.physicalActivity.category === "light") {
-    add("Increase weekly exercise intensity gradually");
+  } else if (lifestyle?.physicalActivity?.category === "light") {
+    add("Gradually increase exercise intensity");
+    add("Aim for at least 150 minutes of moderate-intensity activity weekly");
   }
 
+  // CONDITION-SPECIFIC: Based on detected conditions
   conditionKeys.forEach((condition) => {
-    if (condition === "cardiovascular") {
-      add("Monitor blood pressure regularly");
-      add("Reduce salt intake");
-      add("Schedule cardiovascular follow-up");
+    if (condition === "cardiovascular" && !hasHypertension) {
+      add("Schedule cardiology follow-up");
+      add("Take prescribed cardiac medications consistently");
+      add("Avoid strenuous activity without medical clearance");
     }
 
     if (condition === "metabolic") {
-      add("Monitor blood glucose levels regularly");
-      add("Maintain consistent meal timing");
-      add("Work with a dietitian on meal planning");
+      add("Monitor blood glucose and track patterns");
+      add("Follow prescribed diabetes or metabolic medications");
+      add("Maintain consistent meal timing and portions");
     }
 
     if (condition === "respiratory") {
-      add("Avoid air pollutants and known respiratory triggers");
-      add("Monitor for shortness of breath or worsening cough");
+      add("Avoid air pollutants and respiratory irritants");
+      add("Use prescribed inhalers/medications as directed");
+      add("Report any new or worsening respiratory symptoms");
     }
 
     if (condition === "renal") {
       add("Monitor kidney function regularly");
-      add("Maintain hydration and review sodium intake");
+      add("Reduce sodium intake to protect kidney function");
+      add("Stay hydrated and limit protein intake as advised");
     }
 
     if (condition === "mental") {
-      add("Seek mental health support or counseling");
-      add("Practice sleep and stress management routines");
-    }
-
-    if (condition === "cancer") {
-      add("Coordinate follow-up imaging and oncology review");
+      add("Seek regular mental health support or counseling");
+      add("Practice stress management and relaxation techniques");
+      add("Maintain consistent sleep schedule");
     }
   });
 
-  const { systolic, diastolic } = parseBloodPressure(vitals?.blood_pressure);
-  if ((systolic && systolic >= 130) || (diastolic && diastolic >= 85)) {
-    add("Track blood pressure at home and review trends with a clinician");
+  // RISK-LEVEL SPECIFIC: Based on overall score
+  if (riskLevel === "Critical") {
+    add("Schedule a comprehensive health assessment immediately");
+    add("Discuss this assessment with your primary care provider before making changes");
+    add("Ensure all prescribed medications are being taken as directed");
+  } else if (riskLevel === "High") {
+    add("Schedule a health assessment appointment this month");
+    add("Begin tracking your health metrics consistently");
+  } else if (riskLevel === "Moderate") {
+    add("Schedule a preventive health check-up");
+    add("Begin implementing lifestyle improvements gradually");
   }
 
-  if (riskLevel === "High" || riskLevel === "Critical") {
-    add("Schedule a comprehensive health assessment promptly");
-    add("Review this result with a licensed clinician before changing treatment");
+  // UNIVERSAL: Always included
+  if (!recommendations.some((r) => r.toLowerCase().includes("checkup") || r.toLowerCase().includes("assessment"))) {
+    add("Maintain regular preventive health checkups at least annually");
   }
 
-  add("Schedule regular preventive health checkups");
-  add("Stay hydrated and maintain a healthy sleep schedule");
+  add("Stay hydrated and maintain consistent sleep (7-9 hours nightly)");
 
-  while ((riskLevel === "High" || riskLevel === "Critical") && recommendations.length < 5) {
-    add("Continue regular health monitoring and follow-up care");
-  }
-
-  return recommendations.slice(0, 10);
+  // Limit to top recommendations, prioritized by relevance
+  return recommendations.slice(0, 12);
 }
 
 function getSpecialists({ conditionKeys, riskLevel, vitals }) {
@@ -409,6 +601,7 @@ function scorePatient(data = {}) {
   const age = Number(data?.age) || 0;
   const lifestyle = data?.lifestyle || {};
   const vitals = data?.vitals || {};
+  const lastVisitDate = data?.last_visit_date || null;
   const rawConditions = Array.isArray(data?.condition_categories) && data.condition_categories.length > 0
     ? data.condition_categories
     : Array.isArray(data?.patient_record)
@@ -417,11 +610,14 @@ function scorePatient(data = {}) {
 
   const breakdown = [];
 
+  // DEMOGRAPHICS: Age-based risk
   addContribution(breakdown, "Age", "Demographics", getAgePoints(age));
 
+  // LIFESTYLE FACTORS: Smoking, alcohol, diet, activity
   const lifestyleResult = getLifestylePoints(lifestyle);
   breakdown.push(...lifestyleResult.contributions);
 
+  // MEDICAL HISTORY: Condition-based risk
   const conditionKeys = normalizeConditions(rawConditions);
   conditionKeys.forEach((condition) => {
     addContribution(
@@ -432,8 +628,16 @@ function scorePatient(data = {}) {
     );
   });
 
+  // VITALS: BP, HR, temp, BMI (individual)
   breakdown.push(...getVitalsContributions(vitals));
 
+  // CARDIOVASCULAR PATTERN: Hypertension + lifestyle/BMI interactions
+  breakdown.push(...getCardiovascularRiskPatterns(vitals, lifestyle, breakdown));
+
+  // METABOLIC PATTERN: Obesity + lifestyle/diet + checkup compliance
+  breakdown.push(...getMetabolicRiskPatterns(vitals, lifestyle, lastVisitDate));
+
+  // Calculate final score (capped at 100)
   const score = Math.min(
     breakdown.reduce((sum, item) => sum + (Number(item?.points) || 0), 0),
     100
@@ -445,6 +649,7 @@ function scorePatient(data = {}) {
     conditionKeys,
     riskLevel,
     vitals,
+    breakdown,
   });
   const specialists = getSpecialists({
     conditionKeys,

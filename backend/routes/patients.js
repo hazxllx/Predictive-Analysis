@@ -10,27 +10,16 @@ const serializeUser = (user) => ({
   email: user?.email || null,
   role: user?.role || null,
   patient_id: user?.patient_id || null,
+  pms_linked_at: user?.pms_linked_at || null,
+  pms_matched_by: user?.pms_matched_by || null,
 });
 
 router.get("/me", protect, async (req, res) => {
   try {
-    const linkResult = await resolvePatientLink(req.user, { persist: true });
+    const linkResult = await resolvePatientLink(req.user, { persist: true, hydrate: true });
     const user = linkResult?.user || req.user;
 
-    console.log("[/patients/me] user:", {
-      id: user?._id,
-      role: user?.role,
-      name: user?.name,
-      patient_id: user?.patient_id || null,
-    });
-
     if (linkResult?.linked && linkResult?.data) {
-      console.log("[/patients/me] linked patient:", {
-        patient_id: linkResult.linkedPatientId,
-        autoLinked: linkResult.autoLinked,
-        matchedBy: linkResult.matchedBy,
-      });
-
       return res.json({
         linked: true,
         autoLinked: Boolean(linkResult.autoLinked),
@@ -54,25 +43,23 @@ router.get("/me", protect, async (req, res) => {
       linked: false,
       noMatch: Boolean(linkResult?.noMatch),
       staleLink: Boolean(linkResult?.staleLink),
+      duplicateLink: Boolean(linkResult?.duplicateLink),
+      conflictingData: Boolean(linkResult?.conflictingData),
       user: serializeUser(user),
     });
   } catch (error) {
-    console.error("AUTO-LINK ERROR:", error.message);
+    console.error("Patient link error:", error.message);
     return res.status(500).json({ message: "Failed to resolve patient link" });
   }
 });
 
-// GET /patients - admin/staff sees all, patient sees own
 router.get("/", protect, async (req, res) => {
   try {
-    const patients = await fetchAllPatients();
-
     if (req.user.role === "patient") {
       const pid = req.user.patient_id;
       if (!pid) return res.status(403).json({ message: "No patient ID linked" });
 
-      const patient = patients.find((p) => String(p.patient_id) === String(pid));
-
+      const patient = await fetchPatient(pid);
       return res.json({
         source: "pms",
         count: patient ? 1 : 0,
@@ -80,24 +67,29 @@ router.get("/", protect, async (req, res) => {
       });
     }
 
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const patients = await fetchAllPatients();
     return res.json({
       source: "pms",
       count: patients.length,
       data: patients,
     });
   } catch (error) {
-    console.error("CRITICAL ERROR:", error.message);
-
-    return res.status(500).json({
-      message: "Internal server error",
-    });
+    console.error("Patient list error:", error.message);
+    return res.status(500).json({ message: "Failed to fetch patients" });
   }
 });
 
-// GET /patients/:id
 router.get("/:id", protect, async (req, res) => {
   try {
     if (req.user.role === "patient" && String(req.user.patient_id) !== String(req.params.id)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    if (req.user.role !== "admin" && req.user.role !== "patient") {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -109,7 +101,7 @@ router.get("/:id", protect, async (req, res) => {
 
     return res.json({ data: patient });
   } catch (error) {
-    console.error("PATIENT FETCH ERROR:", error.message);
+    console.error("Patient fetch error:", error.message);
 
     const status = error.message === "Patient not found in PMS" ? 404 : 500;
     return res.status(status).json({

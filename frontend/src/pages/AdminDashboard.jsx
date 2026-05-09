@@ -16,10 +16,13 @@ export default function AdminDashboard() {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data: s } = await api.get("/admin/stats");
+        const [{ data: s }, { data: pList }, { data: assessmentResponse }] = await Promise.all([
+          api.get("/admin/stats"),
+          api.get("/patients"),
+          api.get("/api/v1/predictive-analysis/risk-assessment/all?limit=100"),
+        ]);
         setStats(s);
 
-        const { data: pList } = await api.get("/patients");
         const patientArray = Array.isArray(pList?.data)
           ? pList.data
           : Array.isArray(pList)
@@ -27,30 +30,17 @@ export default function AdminDashboard() {
           : [];
         setPatients(patientArray);
 
-        // Fetch REAL assessments only - not enriched data
-        const allAssessments = [];
-        await Promise.all(
-          patientArray.slice(0, 20).map(async (p) => {
-            const pid = p.id || p.patient_id;
-            if (!pid) return;
-
-            try {
-              const { data } = await api.get(
-                `/api/v1/predictive-analysis/risk-assessment/user?id=${pid}`
-              );
-              if (data?.data) {
-                // Only add if real assessment exists (data.data is not null)
-                allAssessments.push({
-                  ...data.data,
-                  patientName: p.name,
-                  patient_id: pid,
-                });
-              }
-            } catch {
-              // No assessment for this patient - that's fine
-            }
+        const patientMap = new Map(patientArray.map((p) => [String(p.patient_id), p]));
+        const allAssessments = (Array.isArray(assessmentResponse?.data) ? assessmentResponse.data : [])
+          .map((assessment) => {
+            const patient = patientMap.get(String(assessment.patient_id));
+            return {
+              ...assessment,
+              patientName: patient?.name || assessment.patient_id,
+            };
           })
-        );
+          .filter(Boolean);
+
         allAssessments.sort((a, b) =>
           new Date(b.timestamp || b.createdAt) - new Date(a.timestamp || a.createdAt)
         );
@@ -90,7 +80,6 @@ export default function AdminDashboard() {
             {stats && (
               <section style={styles.statsGrid}>
                 <StatCard label="Total Users" value={stats.totalUsers} accent="#0284c7" bg="#e0f2fe" onClick={() => navigate("/admin/users")} />
-                <StatCard label="Healthcare Staff" value={stats.totalStaff} accent="#0f766e" bg="#ccfbf1" onClick={() => navigate("/admin/users")} />
                 <StatCard label="Patient Accounts" value={stats.totalPatientUsers} accent="#7c3aed" bg="#ede9fe" onClick={() => navigate("/admin/users")} />
                 <StatCard label="PMS Patients" value={stats.totalPatients} accent="#0284c7" bg="#dbeafe" onClick={() => navigate("/admin/patients")} />
                 <StatCard label="Total Assessments" value={stats.totalAssessments} accent="#b45309" bg="#fef3c7" onClick={() => navigate("/admin/audit-log")} />

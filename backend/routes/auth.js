@@ -6,6 +6,8 @@ const User = require("../models/User");
 const { protect } = require("../middleware/auth");
 const { resolvePatientLink } = require("../services/patientLinkingService");
 
+const ALLOWED_ROLES = new Set(["patient", "admin"]);
+
 const generateToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
@@ -15,6 +17,8 @@ const serializeUser = (user) => ({
   email: user.email,
   role: user.role,
   patient_id: user.patient_id,
+  pms_linked_at: user.pms_linked_at || null,
+  pms_matched_by: user.pms_matched_by || null,
 });
 
 router.post("/register", async (req, res) => {
@@ -30,17 +34,23 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ message: "Email already registered" });
     }
 
+    const nextRole = role || "patient";
+    if (!ALLOWED_ROLES.has(nextRole)) {
+      return res.status(400).json({ message: "Invalid role" });
+    }
+
     const createdUser = await User.create({
       name: name.trim(),
       email: email.toLowerCase().trim(),
       password,
-      role: role || "patient",
-      patient_id: role === "patient" ? (patient_id || null) : null,
+      role: nextRole,
+      patient_id: null,
     });
 
     const linkResult = await resolvePatientLink(createdUser, {
       persist: true,
       identifiers: { patient_id },
+      hydrate: false,
     });
     const user = linkResult?.user || createdUser;
 
@@ -53,6 +63,8 @@ router.post("/register", async (req, res) => {
         linkedPatientId: linkResult?.linkedPatientId || null,
         multipleMatches: Boolean(linkResult?.multipleMatches),
         noMatch: Boolean(linkResult?.noMatch),
+        duplicateLink: Boolean(linkResult?.duplicateLink),
+        conflictingData: Boolean(linkResult?.conflictingData),
       },
     });
   } catch (err) {
@@ -79,7 +91,7 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    const linkResult = await resolvePatientLink(user, { persist: true });
+    const linkResult = await resolvePatientLink(user, { persist: true, hydrate: false });
     const authenticatedUser = linkResult?.user || user;
 
     res.json({
@@ -91,6 +103,8 @@ router.post("/login", async (req, res) => {
         linkedPatientId: linkResult?.linkedPatientId || null,
         multipleMatches: Boolean(linkResult?.multipleMatches),
         noMatch: Boolean(linkResult?.noMatch),
+        duplicateLink: Boolean(linkResult?.duplicateLink),
+        conflictingData: Boolean(linkResult?.conflictingData),
       },
     });
   } catch (err) {
@@ -101,18 +115,9 @@ router.post("/login", async (req, res) => {
 
 router.get("/me", protect, async (req, res) => {
   try {
-    const linkResult = await resolvePatientLink(req.user, { persist: true });
-    const currentUser = linkResult?.user || req.user;
-
+    // Session restore should stay lightweight; PMS hydration is handled by /patients/me.
     return res.json({
-      user: serializeUser(currentUser),
-      patientLink: {
-        linked: Boolean(linkResult?.linked),
-        autoLinked: Boolean(linkResult?.autoLinked),
-        linkedPatientId: linkResult?.linkedPatientId || null,
-        multipleMatches: Boolean(linkResult?.multipleMatches),
-        noMatch: Boolean(linkResult?.noMatch),
-      },
+      user: serializeUser(req.user),
     });
   } catch (err) {
     console.error("Auth me error:", err);

@@ -46,13 +46,13 @@ const seed = async () => {
 
     await User.deleteMany({
       email: {
-        $in: ["patient@pulseprophet.com", "doctor@pulseprophet.com", "admin@pulseprophet.com"],
+        $in: ["patient@pulseprophet.com", "admin@pulseprophet.com"],
       },
     });
+    await User.deleteMany({ role: { $nin: ["patient", "admin"] } });
     console.log("🗑️  Cleared old accounts");
 
     const patientPass = await bcrypt.hash("123456", 10);
-    const staffPass = await bcrypt.hash("123456", 10);
     const adminPass = await bcrypt.hash("123456", 10);
 
     await User.collection.insertMany([
@@ -62,15 +62,8 @@ const seed = async () => {
         password: patientPass,
         role: "patient",
         patient_id: String(pmsPatientId),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        name: "Dr. Maria Reyes",
-        email: "doctor@pulseprophet.com",
-        password: staffPass,
-        role: "staff",
-        patient_id: null,
+        pms_linked_at: new Date(),
+        pms_matched_by: "patient_id",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -86,7 +79,6 @@ const seed = async () => {
     ]);
 
     console.log("✅ Seeded: patient@pulseprophet.com / 123456");
-    console.log("✅ Seeded: doctor@pulseprophet.com / 123456");
     console.log("✅ Seeded: admin@pulseprophet.com / 123456");
     console.log("🌱 Seed complete!");
     process.exit(0);

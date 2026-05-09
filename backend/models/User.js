@@ -6,10 +6,22 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true, lowercase: true },
     password: { type: String, required: true },
-    role: { type: String, enum: ["patient", "staff", "admin"], default: "patient" },
+    role: { type: String, enum: ["patient", "admin"], default: "patient" },
     patient_id: { type: String, default: null },
+    pms_linked_at: { type: Date, default: null },
+    pms_matched_by: { type: String, enum: ["name", "patient_id", null], default: null },
   },
   { timestamps: true }
+);
+
+userSchema.index(
+  { patient_id: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      patient_id: { $type: "string", $gt: "" },
+    },
+  }
 );
 
 userSchema.pre("save", async function (next) {

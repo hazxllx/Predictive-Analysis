@@ -46,13 +46,8 @@ export default function PatientDetail() {
   });
   const [showAllRecommendations, setShowAllRecommendations] = useState(false);
 
-  const [showAppointmentModal, setShowAppointmentModal] = useState(false);
-  const [appointmentDateTime, setAppointmentDateTime] = useState("");
-  const [appointmentLoading, setAppointmentLoading] = useState(false);
-  const [appointmentFeedback, setAppointmentFeedback] = useState({ type: "", message: "" });
-
-  const canRunAssessment = user?.role === "staff" || user?.role === "admin";
-  const backPath = user?.role === "admin" ? "/admin/patients" : "/patients";
+  const canRunAssessment = user?.role === "admin";
+  const backPath = "/admin/patients";
 
   useEffect(() => {
     if (!id) return;
@@ -125,6 +120,8 @@ export default function PatientDetail() {
       setHistory([normalized]);
       setCachedQuery(["assessment", id], normalized);
       invalidateCachedQuery(["patients"]);
+      invalidateCachedQuery(["assessments", "latest-by-patient"]);
+      invalidateCachedQuery(["assessments", "all"]);
     } catch (err) {
       setError(err.response?.data?.message || err.message || "Assessment failed");
     } finally {
@@ -208,32 +205,6 @@ export default function PatientDetail() {
     setExpandedPanels((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const requestAppointment = async () => {
-    if (!appointmentDateTime || appointmentLoading) return;
-
-    setAppointmentLoading(true);
-    setAppointmentFeedback({ type: "", message: "" });
-
-    try {
-      await api.post("/api/v1/appointments/request", {
-        patientId: id,
-        scheduledDate: new Date(appointmentDateTime).toISOString(),
-      });
-      setAppointmentFeedback({ type: "success", message: "Request sent" });
-      setTimeout(() => {
-        setShowAppointmentModal(false);
-        setAppointmentDateTime("");
-      }, 700);
-    } catch (err) {
-      setAppointmentFeedback({
-        type: "error",
-        message: err.response?.data?.message || "Failed to request appointment",
-      });
-    } finally {
-      setAppointmentLoading(false);
-    }
-  };
-
   if (loading && !patient) {
     return (
       <div style={styles.layout}>
@@ -289,15 +260,6 @@ export default function PatientDetail() {
 
           {canRunAssessment && (
             <div style={styles.headerActions}>
-              <button
-                style={styles.ghostActionBtn}
-                onClick={() => {
-                  setAppointmentFeedback({ type: "", message: "" });
-                  setShowAppointmentModal(true);
-                }}
-              >
-                Request Appointment
-              </button>
               <button
                 style={{ ...styles.assessBtn, opacity: assessing ? 0.75 : 1 }}
                 onClick={runAssessment}
@@ -506,57 +468,6 @@ export default function PatientDetail() {
           </section>
         </div>
 
-        {showAppointmentModal && (
-          <div style={styles.modalOverlay}>
-            <div style={styles.modalCard}>
-              <h3 style={styles.modalTitle}>Request Appointment</h3>
-              <p style={styles.modalSub}>Select a preferred date and time for this patient.</p>
-
-              <input
-                type="datetime-local"
-                value={appointmentDateTime}
-                onChange={(e) => setAppointmentDateTime(e.target.value)}
-                style={styles.dateInput}
-                disabled={appointmentLoading}
-              />
-
-              {appointmentFeedback.message && (
-                <div
-                  style={
-                    appointmentFeedback.type === "success" ? styles.successNotice : styles.errorNotice
-                  }
-                >
-                  {appointmentFeedback.message}
-                </div>
-              )}
-
-              <div style={styles.modalActions}>
-                <button
-                  style={styles.modalCancelBtn}
-                  onClick={() => {
-                    if (appointmentLoading) return;
-                    setShowAppointmentModal(false);
-                    setAppointmentFeedback({ type: "", message: "" });
-                  }}
-                  disabled={appointmentLoading}
-                >
-                  Cancel
-                </button>
-                <button
-                  style={{
-                    ...styles.modalConfirmBtn,
-                    opacity: appointmentLoading || !appointmentDateTime ? 0.7 : 1,
-                    cursor: appointmentLoading || !appointmentDateTime ? "not-allowed" : "pointer",
-                  }}
-                  onClick={requestAppointment}
-                  disabled={appointmentLoading || !appointmentDateTime}
-                >
-                  {appointmentLoading ? "Processing..." : "Confirm Request"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </main>
     </div>
   );
@@ -646,8 +557,8 @@ function toneStyle(tone) {
 
 function getScoreColor(score) {
   if (score >= 70) return "#dc2626";
-  if (score >= 50) return "#d97706";
-  if (score >= 30) return "#ca8a04";
+  if (score >= 45) return "#d97706";
+  if (score >= 20) return "#ca8a04";
   return "#16a34a";
 }
 

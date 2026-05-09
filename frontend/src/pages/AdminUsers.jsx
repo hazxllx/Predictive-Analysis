@@ -2,9 +2,8 @@ import React, { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
 
-const ROLE_LABELS = { staff: "Healthcare Staff", patient: "Patient", admin: "Administrator" };
+const ROLE_LABELS = { patient: "Patient", admin: "Administrator" };
 const ROLE_COLORS = {
-  staff:   { bg: "#e0f2fe", color: "#0284c7", border: "#bae6fd" },
   patient: { bg: "#ede9fe", color: "#7c3aed", border: "#ddd6fe" },
   admin:   { bg: "#ffe4e6", color: "#be123c", border: "#fecdd3" },
 };
@@ -149,7 +148,6 @@ export default function AdminUsers() {
           >
             <option value="All">All Roles</option>
             <option value="admin">Administrator</option>
-            <option value="staff">Healthcare Staff</option>
             <option value="patient">Patient</option>
           </select>
         </div>
@@ -264,7 +262,6 @@ export default function AdminUsers() {
                     onChange={(e) => setForm({ ...form, role: e.target.value, patient_id: "" })}
                   >
                     <option value="patient">Patient</option>
-                    <option value="staff">Healthcare Staff</option>
                     <option value="admin">Administrator</option>
                   </select>
                 </Field>

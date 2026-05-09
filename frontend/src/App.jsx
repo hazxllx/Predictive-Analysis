@@ -3,8 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth, getRoleHome } from "./context/AuthContext";
 import Auth from "./pages/Auth";
 
-// Staff / shared pages
-import Dashboard from "./pages/Dashboard";
+// Shared pages
 import PatientDetail from "./pages/PatientDetail";
 import Patients from "./pages/Patients";
 import AuditLog from "./pages/AuditLog";
@@ -65,66 +64,6 @@ export default function App() {
           {/* Root → redirect based on role */}
           <Route path="/" element={<RoleRedirect />} />
 
-          {/* ── STAFF routes ── */}
-          <Route
-            path="/dashboard"
-            element={
-              <RoleRoute allowedRoles={["staff"]}>
-                <Dashboard />
-              </RoleRoute>
-            }
-          />
-          <Route
-            path="/patients"
-            element={
-              <RoleRoute allowedRoles={["staff"]}>
-                <Patients />
-              </RoleRoute>
-            }
-          />
-          <Route
-            path="/audit-log"
-            element={
-              <RoleRoute allowedRoles={["staff"]}>
-                <AuditLog />
-              </RoleRoute>
-            }
-          />
-          <Route
-            path="/patients/:id/assessment"
-            element={
-              <RoleRoute allowedRoles={["staff"]}>
-                <AssessmentExecution />
-              </RoleRoute>
-            }
-          />
-          <Route
-            path="/patients/:id"
-            element={
-              <RoleRoute allowedRoles={["staff"]}>
-                <PatientDetail />
-              </RoleRoute>
-            }
-          />
-
-          {/* ── PATIENT routes ── */}
-          <Route
-            path="/my-dashboard"
-            element={
-              <RoleRoute allowedRoles={["patient"]}>
-                <PatientDashboard />
-              </RoleRoute>
-            }
-          />
-          <Route
-            path="/my-progress"
-            element={
-              <RoleRoute allowedRoles={["patient"]}>
-                <MyProgress />
-              </RoleRoute>
-            }
-          />
-
           {/* ── ADMIN routes ── */}
           <Route
             path="/admin-dashboard"
@@ -151,6 +90,22 @@ export default function App() {
             }
           />
           <Route
+            path="/admin/patients/:id/assessment"
+            element={
+              <RoleRoute allowedRoles={["admin"]}>
+                <AssessmentExecution />
+              </RoleRoute>
+            }
+          />
+          <Route
+            path="/admin/patients/:id"
+            element={
+              <RoleRoute allowedRoles={["admin"]}>
+                <PatientDetail />
+              </RoleRoute>
+            }
+          />
+          <Route
             path="/admin/audit-log"
             element={
               <RoleRoute allowedRoles={["admin"]}>
@@ -158,11 +113,21 @@ export default function App() {
               </RoleRoute>
             }
           />
+
+          {/* ── PATIENT routes ── */}
           <Route
-            path="/admin/patient/:id"
+            path="/my-dashboard"
             element={
-              <RoleRoute allowedRoles={["admin"]}>
-                <PatientDetail />
+              <RoleRoute allowedRoles={["patient"]}>
+                <PatientDashboard />
+              </RoleRoute>
+            }
+          />
+          <Route
+            path="/my-progress"
+            element={
+              <RoleRoute allowedRoles={["patient"]}>
+                <MyProgress />
               </RoleRoute>
             }
           />

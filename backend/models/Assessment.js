@@ -18,4 +18,7 @@ const assessmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+assessmentSchema.index({ patient_id: 1, createdAt: -1 });
+assessmentSchema.index({ userId: 1, createdAt: -1 });
+
 module.exports = mongoose.model("Assessment", assessmentSchema);

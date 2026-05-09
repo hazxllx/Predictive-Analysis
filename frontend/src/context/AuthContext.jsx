@@ -1,12 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import api from "../api/axios";
+import { clearAllCachedQueries } from "../api/queryCache";
 
 const AuthContext = createContext();
 
 export const getRoleHome = (role) => {
   if (role === "admin") return "/admin-dashboard";
-  if (role === "patient") return "/my-dashboard";
-  return "/dashboard"; // staff
+  return "/my-dashboard"; // patient
 };
 
 export const AuthProvider = ({ children }) => {
@@ -77,6 +77,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
+    clearAllCachedQueries();
     localStorage.setItem("pp_token", data.token);
     persistUser(data.user);
     return data.user;
@@ -84,6 +85,7 @@ export const AuthProvider = ({ children }) => {
 
   const register = async (name, email, password, role, patient_id) => {
     const { data } = await api.post("/auth/register", { name, email, password, role, patient_id });
+    clearAllCachedQueries();
     localStorage.setItem("pp_token", data.token);
     persistUser(data.user);
     return data.user;
@@ -91,6 +93,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     localStorage.removeItem("pp_token");
+    clearAllCachedQueries();
     persistUser(null);
   };
 

@@ -83,8 +83,10 @@ export default function AssessmentExecution() {
       const { data } = await api.post("/api/v1/predictive-analysis/risk-assessment", { patient_id: id });
       setCachedQuery(["assessment", id], data);
       invalidateCachedQuery(["patients"]);
+      invalidateCachedQuery(["assessments", "latest-by-patient"]);
+      invalidateCachedQuery(["assessments", "all"]);
       await wait(1200);
-      navigate(`/patients/${id}`);
+      navigate(`/admin/patients/${id}`);
     } catch (err) {
       setError(err.response?.data?.message || "Assessment failed.");
       setRunning(false);
@@ -109,7 +111,7 @@ export default function AssessmentExecution() {
         <Sidebar />
         <main style={styles.mainCentered}>
           <p style={styles.errorText}>{error || "Patient not found."}</p>
-          <button style={styles.secondaryBtn} onClick={() => navigate("/patients")}>
+          <button style={styles.secondaryBtn} onClick={() => navigate("/admin/patients")}>
             Back to Patients
           </button>
         </main>
@@ -135,7 +137,7 @@ export default function AssessmentExecution() {
       <Sidebar />
       <main style={styles.main}>
         <header style={styles.header}>
-          <button style={styles.secondaryBtn} onClick={() => navigate(`/patients/${id}`)}>
+          <button style={styles.secondaryBtn} onClick={() => navigate(`/admin/patients/${id}`)}>
             {"<- Back"}
           </button>
           <div style={styles.identity}>

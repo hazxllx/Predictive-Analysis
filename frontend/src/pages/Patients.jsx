@@ -55,25 +55,25 @@ export default function Patients() {
           setCachedQuery(["patient", patient.patient_id], patient);
         });
 
-        const assessmentEntries = await Promise.all(
-          patientList.map(async (patient) => {
-            try {
-              const { data } = await api.get(
-                `/api/v1/predictive-analysis/risk-assessment/user?id=${patient.patient_id}`
-              );
-              const normalized = normalizeAssessment(data?.data ?? data);
-              if (!normalized) return null;
-
-              setCachedQuery(["assessment", patient.patient_id], normalized);
-              return [patient.patient_id, normalized];
-            } catch {
-              return null;
-            }
+        const { data: latestResponse } = await fetchWithCache({
+          key: ["assessments", "latest-by-patient"],
+          fetcher: async () => {
+            const { data } = await api.get("/api/v1/predictive-analysis/risk-assessment/latest-by-patient");
+            return data;
+          },
+        });
+        const latestByPatient = latestResponse?.data || {};
+        const assessmentEntries = patientList
+          .map((patient) => {
+            const normalized = normalizeAssessment(latestByPatient[patient.patient_id]);
+            if (!normalized) return null;
+            setCachedQuery(["assessment", patient.patient_id], normalized);
+            return [patient.patient_id, normalized];
           })
-        );
+          .filter(Boolean);
 
         setAssessments(
-          assessmentEntries.filter(Boolean).reduce((acc, [patientId, assessment]) => {
+          assessmentEntries.reduce((acc, [patientId, assessment]) => {
             acc[patientId] = assessment;
             return acc;
           }, {})
@@ -104,7 +104,7 @@ export default function Patients() {
     if (!patientId) return;
 
     const assessment = assessments[patientId] || null;
-    const path = user?.role === "admin" ? `/admin/patient/${patientId}` : `/patients/${patientId}`;
+    const path = user?.role === "admin" ? `/admin/patients/${patientId}` : `/my-dashboard`;
 
     navigate(path, {
       state: {

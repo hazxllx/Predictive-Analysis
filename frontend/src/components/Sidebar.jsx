@@ -4,36 +4,30 @@ import { LayoutDashboard, Users, ClipboardList, LogOut, Shield, LineChart } from
 import { useAuth } from "../context/AuthContext";
 
 const ROLE_LABEL = {
-  staff: "Healthcare Staff",
   admin: "Administrator",
   patient: "Patient",
 };
 
 const ROLE_NAV = {
-  staff: [
-    { icon: <LayoutDashboard size={16} />, label: "Dashboard", path: "/dashboard" },
-    { icon: <Users size={16} />, label: "Patients", path: "/patients" },
-    { icon: <ClipboardList size={16} />, label: "Audit Log", path: "/audit-log" },
-  ],
-  patient: [
-    { icon: <LayoutDashboard size={16} />, label: "Dashboard", path: "/my-dashboard" },
-    { icon: <LineChart size={16} />, label: "My Progress", path: "/my-progress" },
-  ],
   admin: [
     { icon: <LayoutDashboard size={16} />, label: "Dashboard", path: "/admin-dashboard" },
     { icon: <Shield size={16} />, label: "Users", path: "/admin/users" },
     { icon: <Users size={16} />, label: "Patients", path: "/admin/patients" },
     { icon: <ClipboardList size={16} />, label: "Audit Log", path: "/admin/audit-log" },
   ],
+  patient: [
+    { icon: <LayoutDashboard size={16} />, label: "Dashboard", path: "/my-dashboard" },
+    { icon: <LineChart size={16} />, label: "My Progress", path: "/my-progress" },
+  ],
 };
 
-export default function Sidebar() {
+function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const role = user?.role || "staff";
-  const navItems = ROLE_NAV[role] || ROLE_NAV.staff;
+  const role = user?.role === "admin" ? "admin" : "patient";
+  const navItems = ROLE_NAV[role] || ROLE_NAV.patient;
 
   return (
     <aside style={styles.sidebar}>
@@ -52,52 +46,14 @@ export default function Sidebar() {
       </div>
 
       <nav style={styles.nav}>
-        {role === "staff" ? (
-          <>
+        {navItems.map((item) => {
+          const active =
+            role === "patient"
+              ? location.pathname === item.path
+              : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+          return (
             <button
-              style={{ ...styles.navItem, ...(location.pathname === "/dashboard" ? styles.navActive : {}) }}
-              onClick={() => navigate("/dashboard")}
-            >
-              <span style={styles.navIcon}>
-                <LayoutDashboard size={16} />
-              </span>
-              <span>Dashboard</span>
-            </button>
-
-            <button
-              style={{
-                ...styles.navItem,
-                ...((location.pathname === "/patients" || location.pathname.startsWith("/patients/"))
-                  ? styles.navActive
-                  : {}),
-              }}
-              onClick={() => navigate("/patients")}
-            >
-              <span style={styles.navIcon}>
-                <Users size={16} />
-              </span>
-              <span>Patients</span>
-            </button>
-
-            <button
-              style={{ ...styles.navItem, ...(location.pathname === "/audit-log" ? styles.navActive : {}) }}
-              onClick={() => navigate("/audit-log")}
-            >
-              <span style={styles.navIcon}>
-                <ClipboardList size={16} />
-              </span>
-              <span>Audit Log</span>
-            </button>
-          </>
-        ) : (
-          navItems.map((item) => {
-            const active =
-              role === "patient"
-                ? location.pathname === item.path
-                : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
-            return (
-              <button
-                key={item.path}
+              key={item.path}
                 style={{ ...styles.navItem, ...(active ? styles.navActive : {}) }}
                 onClick={() => navigate(item.path)}
               >
@@ -105,8 +61,7 @@ export default function Sidebar() {
                 <span>{item.label}</span>
               </button>
             );
-          })
-        )}
+          })}
       </nav>
 
       <div style={styles.userSection}>
@@ -122,6 +77,8 @@ export default function Sidebar() {
     </aside>
   );
 }
+
+export default React.memo(Sidebar);
 
 const styles = {
   sidebar: {

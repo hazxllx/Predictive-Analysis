@@ -394,35 +394,29 @@ export default function AuditLog() {
         patients?.forEach((p) => { pMap[p.patient_id] = p; });
         setPatientMap(pMap);
 
-        const allRows = [];
-        await Promise.all(
-          patients?.map(async (p) => {
-            try {
-              const { data: assessments } = await fetchWithCache({
-                key: ["assessment", p.patient_id],
-                fetcher: async () => {
-                  const res = await api.get(`/api/v1/predictive-analysis/risk-assessment/user?id=${p.patient_id}`);
-                  return res.data;
-                },
-              });
-              
-              const assessmentData = assessments?.data ?? assessments;
-              (Array.isArray(assessmentData) ? assessmentData : [assessmentData].filter(Boolean)).forEach((a) => {
-                if (!a) return;
-                allRows.push({
-                  logId: a._id || `${p.patient_id}-${a.timestamp || a.createdAt}`,
-                  patientId: p.patient_id,
-                  patientName: p.name || p.patient_id,
-                  action: "Assessment completed",
-                  performedBy: a.performed_by || "System",
-                  timestamp: a.timestamp || a.createdAt,
-                  riskLevel: a.risk_level || "—",
-                  score: typeof a.risk_score === "number" ? a.risk_score : null,
-                });
-              });
-            } catch { /* ignore */ }
+        const { data: assessmentResponse } = await fetchWithCache({
+          key: ["assessments", "all"],
+          fetcher: async () => {
+            const res = await api.get("/api/v1/predictive-analysis/risk-assessment/all?limit=1000");
+            return res.data;
+          },
+        });
+
+        const allRows = (Array.isArray(assessmentResponse?.data) ? assessmentResponse.data : [])
+          .map((a) => {
+            const p = pMap[a.patient_id];
+            return {
+              logId: a._id || `${a.patient_id}-${a.timestamp || a.createdAt}`,
+              patientId: a.patient_id,
+              patientName: p?.name || a.patient_id,
+              action: "Assessment completed",
+              performedBy: a.performed_by || "System",
+              timestamp: a.timestamp || a.createdAt,
+              riskLevel: a.risk_level || "N/A",
+              score: typeof a.risk_score === "number" ? a.risk_score : null,
+            };
           })
-        );
+          .filter(Boolean);
 
         allRows.sort((a, b) => {
           const dateA = a.timestamp ? new Date(a.timestamp) : new Date(0);
@@ -553,7 +547,7 @@ export default function AuditLog() {
                   <LogEntry
                     key={item.data.logId}
                     entry={item.data}
-                    onOpen={() => navigate(`/patient/${item.data.patientId}`)}
+                    onOpen={() => navigate(`/admin/patients/${item.data.patientId}`)}
                   />
                 )
               )}
@@ -594,7 +588,7 @@ function LogEntry({ entry, onOpen }) {
       </div>
 
       <div style={styles.cardMiddle}>
-        {entry.riskLevel && entry.riskLevel !== "—" ? (
+        {entry.riskLevel && entry.riskLevel !== "N/A" ? (
           <>
             <span style={riskPill(entry.riskLevel)}>{entry.riskLevel}</span>
             {entry.score !== null && <span style={styles.cardScore}>{entry.score}/100</span>}

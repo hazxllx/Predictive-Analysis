@@ -1,8 +1,6 @@
-import React, { Suspense, lazy, useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth, getRoleHome } from "../context/AuthContext";
-
-const Spline = lazy(() => import("@splinetool/react-spline"));
 
 export default function Auth() {
   const [mode, setMode] = useState("login");
@@ -102,10 +100,10 @@ export default function Auth() {
   return (
     <div style={styles.page}>
       <div style={styles.left}>
-        <div style={styles.splineWrap}>
-          <Suspense fallback={<div style={styles.splineFallback}>Loading experience...</div>}>
-            <Spline scene="https://prod.spline.design/8c0dhjA6Ce7tLXsT/scene.splinecode" />
-          </Suspense>
+        <div style={styles.pulseVisual} aria-hidden="true">
+          <span style={styles.pulseRingLarge} />
+          <span style={styles.pulseRingMedium} />
+          <span style={styles.pulseCore} />
         </div>
         <div style={styles.leftOverlay} />
         <div style={styles.leftContent}>
@@ -128,11 +126,11 @@ export default function Auth() {
           <div style={styles.dividerLine} />
           <div style={styles.infoCards}>
             <div style={styles.infoCard}>
-              <span style={styles.infoIcon}>HS</span>
+              <span style={styles.infoIcon}>AD</span>
               <div>
-                <p style={styles.infoTitle}>For Healthcare Staff</p>
+                <p style={styles.infoTitle}>For Administrators</p>
                 <p style={styles.infoDesc}>
-                  Monitor all patients, run risk assessments
+                  Manage users, review patients, and run risk assessments
                 </p>
               </div>
             </div>
@@ -380,25 +378,38 @@ const styles = {
     overflow: "hidden",
     background: "#0f4f66",
   },
-  splineWrap: {
+  pulseVisual: {
     position: "absolute",
-    inset: 0,
-    opacity: 0.72,
+    right: "-70px",
+    top: "50%",
+    width: "430px",
+    height: "430px",
+    borderRadius: "50%",
+    transform: "translateY(-50%)",
+    opacity: 0.78,
     pointerEvents: "none",
-    filter: "saturate(0.85) blur(1.1px)",
-    transform: "scale(0.76) translateX(7%)",
-    transformOrigin: "center center",
     animation: "softFloat 9s ease-in-out infinite",
   },
-  splineFallback: {
+  pulseRingLarge: {
     position: "absolute",
     inset: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "rgba(255,255,255,0.85)",
-    fontSize: "14px",
-    letterSpacing: "0.2px",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.34)",
+    background: "radial-gradient(circle, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.02) 58%, rgba(255,255,255,0) 70%)",
+  },
+  pulseRingMedium: {
+    position: "absolute",
+    inset: "74px",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.42)",
+    background: "rgba(255,255,255,0.08)",
+  },
+  pulseCore: {
+    position: "absolute",
+    inset: "168px",
+    borderRadius: "50%",
+    background: "#ffffff",
+    boxShadow: "0 0 42px rgba(255,255,255,0.46)",
   },
   leftOverlay: {
     position: "absolute",
@@ -682,9 +693,9 @@ if (typeof document !== "undefined" && !document.getElementById("auth-soft-float
   style.id = "auth-soft-float-keyframes";
   style.innerHTML = `
     @keyframes softFloat {
-      0% { transform: scale(0.76) translateX(7%) translateY(0px); }
-      50% { transform: scale(0.76) translateX(7%) translateY(-8px); }
-      100% { transform: scale(0.76) translateX(7%) translateY(0px); }
+      0% { transform: translateY(-50%) translateX(0px); }
+      50% { transform: translateY(calc(-50% - 8px)) translateX(-6px); }
+      100% { transform: translateY(-50%) translateX(0px); }
     }
   `;
   document.head.appendChild(style);

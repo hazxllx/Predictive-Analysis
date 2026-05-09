@@ -1,420 +1,284 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, ArrowRight, ChevronDown } from "lucide-react";
+import { Activity, ArrowRight, HeartPulse, RefreshCw, ShieldCheck, Stethoscope } from "lucide-react";
 import Sidebar from "../components/Sidebar";
+import RiskBadge from "../components/RiskBadge";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
 import EmptyState from "../components/EmptyState";
 import NotLinkedState from "../components/NotLinkedState";
 import { fetchWithCache } from "../api/cachedFetch";
+import { invalidateCachedQuery, setCachedQuery } from "../api/queryCache";
+import { normalizeAssessment } from "../utils/normalizeAssessment";
+import { normalizePatient } from "../utils/normalizePatients";
+import "./PatientDashboard.css";
 
-function displayDate(value) {
-  if (!value) return "No recent update";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "No recent update";
-  return d.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+const RISK_TONE = {
+  Critical: { stroke: "#dc2626", soft: "#fef2f2", text: "#991b1b" },
+  High: { stroke: "#f97316", soft: "#fff7ed", text: "#9a3412" },
+  Moderate: { stroke: "#eab308", soft: "#fefce8", text: "#854d0e" },
+  Low: { stroke: "#22c55e", soft: "#f0fdf4", text: "#166534" },
+};
+
+function getPatientFirstName(name = "") {
+  return String(name || "").trim().split(/\s+/)[0] || "there";
 }
 
-function statusFromLevel(level) {
-  if (level === "Low" || level === "Moderate") return "Good";
-  return "Needs Attention";
+function formatDate(value) {
+  if (!value) return "No assessment yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "No assessment yet";
+  return date.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
 }
 
-function timeGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+function getPatientId(patient, user) {
+  return patient?.patient_id || patient?.id || user?.patient_id || null;
 }
 
-function heroMessage(level, hasAssessment) {
-  if (!hasAssessment) return "Take your first assessment to see your personalized health score.";
-  if (level === "Critical" || level === "High") return "Let’s focus on small improvements today.";
-  if (level === "Moderate") return "Let’s focus on small improvements today.";
-  return "You're doing well. Keep maintaining your habits.";
+function getHealthScore(riskScore) {
+  if (!Number.isFinite(Number(riskScore))) return null;
+  return Math.max(0, Math.min(100, 100 - Number(riskScore)));
 }
 
-function normalizeAssessment(item) {
-  return {
-    risk_score: Number(item?.risk_score ?? item?.score ?? 0) || 0,
-    risk_level: item?.risk_level || "Unknown",
-    recommendations: Array.isArray(item?.recommendations) ? item.recommendations : [],
-    createdAt: item?.createdAt || item?.created_at || item?.timestamp || item?.date || null,
-    timestamp: item?.timestamp || item?.createdAt || item?.created_at || item?.date || null,
-  };
+function getTopRiskFactor(assessment, patient) {
+  const breakdown = Array.isArray(assessment?.breakdown) ? assessment.breakdown : [];
+  const topContribution = [...breakdown]
+    .filter((item) => Number(item?.points) > 0)
+    .sort((a, b) => Number(b.points) - Number(a.points))[0];
+
+  if (topContribution?.label) return topContribution.label;
+
+  const bp = parseBloodPressure(patient?.vitals?.blood_pressure);
+  if (bp.status !== "Normal" && bp.status !== "No recent reading") return "Blood pressure";
+  if (patient?.lifestyle?.smoking) return "Smoking";
+  if (patient?.lifestyle?.alcohol) return "Alcohol use";
+  if (patient?.lifestyle?.physical_activity) return "Physical activity";
+  return "Recent health markers";
 }
 
-function extractHealthRecords(data) {
-  if (Array.isArray(data?.data?.records)) return data.data.records;
-  if (Array.isArray(data?.data?.healthRecords)) return data.data.healthRecords;
-  if (Array.isArray(data?.data)) return data.data;
-  if (Array.isArray(data)) return data;
-  return [];
+function getSummary(level, hasAssessment) {
+  if (!hasAssessment) return "Run an assessment to create your first personalized health view.";
+  if (level === "Critical") return "Your profile needs prompt clinical attention.";
+  if (level === "High") return "A few markers need closer follow-up soon.";
+  if (level === "Moderate") return "Some markers are worth improving this week.";
+  if (level === "Low") return "Most recent markers are in a reassuring range.";
+  return "Your latest assessment is ready.";
+}
+
+function getRecommendations(assessment) {
+  const list = Array.isArray(assessment?.recommendations) ? assessment.recommendations : [];
+  return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 3);
+}
+
+function parseBloodPressure(value) {
+  const [systolic, diastolic] = String(value || "")
+    .split("/")
+    .map((part) => Number(part));
+
+  if (!Number.isFinite(systolic) || !Number.isFinite(diastolic)) {
+    return { status: "No recent reading", tone: "muted" };
+  }
+
+  if (systolic >= 140 || diastolic >= 90) return { status: "High", tone: "danger" };
+  if (systolic >= 130 || diastolic >= 85) return { status: "Slightly elevated", tone: "watch" };
+  return { status: "Normal", tone: "good" };
+}
+
+function getVitalCards(patient) {
+  const vitals = patient?.vitals || {};
+  const bpStatus = parseBloodPressure(vitals.blood_pressure);
+  const heartRate = Number(vitals.heart_rate);
+  const temp = Number(vitals.temperature);
+
+  return [
+    {
+      key: "bp",
+      label: "Blood Pressure",
+      value: vitals.blood_pressure || "No recent reading",
+      status: bpStatus.status,
+      tone: bpStatus.tone,
+    },
+    {
+      key: "hr",
+      label: "Heart Rate",
+      value: vitals.heart_rate ? `${vitals.heart_rate} bpm` : "No recent reading",
+      status:
+        Number.isFinite(heartRate) && (heartRate > 100 || heartRate < 50)
+          ? "Needs review"
+          : Number.isFinite(heartRate)
+          ? "Normal"
+          : "No recent reading",
+      tone: Number.isFinite(heartRate) && (heartRate > 100 || heartRate < 50) ? "watch" : "good",
+    },
+    {
+      key: "temp",
+      label: "Temperature",
+      value: vitals.temperature ? `${vitals.temperature} F` : "No recent reading",
+      status:
+        Number.isFinite(temp) && temp >= 100.4
+          ? "Elevated"
+          : Number.isFinite(temp)
+          ? "Normal"
+          : "No recent reading",
+      tone: Number.isFinite(temp) && temp >= 100.4 ? "watch" : "good",
+    },
+  ];
+}
+
+function buildMissingDataMessage(error) {
+  const fields = error?.response?.data?.missing_fields;
+  if (!Array.isArray(fields) || fields.length === 0) {
+    return error?.response?.data?.message || "Assessment could not be completed.";
+  }
+
+  return `PMS data is missing: ${fields.join(", ")}. Please ask your care team to update your profile.`;
 }
 
 export default function PatientDashboard() {
   const { user, syncUser } = useAuth();
-
   const [patient, setPatient] = useState(null);
   const [latestAssessment, setLatestAssessment] = useState(null);
-  const [assessmentHistory, setAssessmentHistory] = useState([]);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showWhyScore, setShowWhyScore] = useState(false);
-
   const [runningAssessment, setRunningAssessment] = useState(false);
-  const [assessmentError, setAssessmentError] = useState("");
-
-  const [showSuccess, setShowSuccess] = useState(false);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
-
-  const [appointments, setAppointments] = useState([]);
-  const [appointmentsLoading, setAppointmentsLoading] = useState(false);
-  const [appointmentActionLoading, setAppointmentActionLoading] = useState(false);
-  const [resolvedPatientId, setResolvedPatientId] = useState(null);
-  const [linkInfo, setLinkInfo] = useState(null);
   const [dashboardError, setDashboardError] = useState("");
+  const [assessmentError, setAssessmentError] = useState("");
+  const [linkInfo, setLinkInfo] = useState(null);
 
-  const loadAppointments = useCallback(async () => {
-    try {
-      const pid = resolvedPatientId || user?.patient_id;
-      if (!pid) return;
-      setAppointmentsLoading(true);
-      const { data } = await fetchWithCache({
-        key: ["appointments", pid],
-        fetcher: async () => {
-          const { data } = await api.get(`/api/v1/appointments/patient/${pid}`);
-          return data;
-        },
-      });
-      setAppointments(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Patient appointments load error:", err);
-    } finally {
-      setAppointmentsLoading(false);
-    }
-  }, [resolvedPatientId, user?.patient_id]);
-
-  const respondToAppointment = async (appointmentId, action) => {
-    if (appointmentActionLoading) return;
-
-    try {
-      setAppointmentActionLoading(true);
-      await api.patch(`/api/v1/appointments/${appointmentId}/respond`, { action });
-      await loadAppointments();
-    } catch (err) {
-      console.error("Appointment response error:", err);
-    } finally {
-      setAppointmentActionLoading(false);
-    }
-  };
-
-  const loadDashboard = useCallback(async () => {
-    try {
+  // The patient dashboard uses /patients/me as the single PMS link source of truth.
+  const loadDashboard = useCallback(
+    async ({ force = false } = {}) => {
       if (!user) return;
 
-      setDashboardError("");
-      setAssessmentError("");
+      try {
+        setDashboardError("");
+        setAssessmentError("");
 
-      const { data: meResponse } = await fetchWithCache({
-        key: ["patients-me", user?._id || user?.email || "current"],
-        fetcher: async () => {
-          const { data } = await api.get("/patients/me");
-          return data;
-        },
-      });
-      console.log("[PatientDashboard] /patients/me response:", meResponse);
+        const cacheKey = ["patients-me", user?.id || user?.email || "current"];
+        const { data: linkResponse } = await fetchWithCache({
+          key: cacheKey,
+          force,
+          fetcher: async () => {
+            const { data } = await api.get("/patients/me");
+            return data;
+          },
+        });
 
-      if (meResponse?.user?.id && meResponse.user.patient_id !== user?.patient_id) {
-        syncUser(meResponse.user);
-      }
-
-      if (meResponse?.linked && meResponse?.data) {
-        setPatient(meResponse.data);
-        const pid = meResponse.data.id || meResponse.data.patient_id || user?.patient_id || null;
-        setResolvedPatientId(pid);
-        setLinkInfo(null);
-
-        if (pid) {
-          try {
-            const { data } = await fetchWithCache({
-              key: ["health-records"],
-              fetcher: async () => {
-                const { data } = await api.get("/api/v1/external/health-records");
-                return data;
-              },
-            });
-            const records = extractHealthRecords(data);
-            const assessments = records
-              .filter((item) => String(item?.patient_id || item?.id || "") === String(pid))
-              .map(normalizeAssessment);
-
-            const sorted = [...assessments].sort(
-              (a, b) => new Date(b.createdAt || b.timestamp || 0) - new Date(a.createdAt || a.timestamp || 0)
-            );
-
-            setAssessmentHistory(sorted);
-            setLatestAssessment(sorted[0] || null);
-            setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || null);
-          } catch (err) {
-            if (err?.response?.status === 404) {
-              setAssessmentHistory([]);
-              setLatestAssessment(null);
-              setLastUpdatedAt(null);
-            } else {
-              throw err;
-            }
-          }
-        } else {
-          setAssessmentHistory([]);
-          setLatestAssessment(null);
-          setLastUpdatedAt(null);
+        if (linkResponse?.user?.id && linkResponse.user.patient_id !== user?.patient_id) {
+          syncUser(linkResponse.user);
         }
 
-        return;
-      }
+        if (!(linkResponse?.linked && linkResponse?.data)) {
+          setPatient(null);
+          setLatestAssessment(null);
+          setHistory([]);
+          setLinkInfo({
+            type: linkResponse?.multipleMatches ? "multiple" : "none",
+            message: linkResponse?.multipleMatches
+              ? "Multiple PMS profiles matched your name. Your care team can link the correct record."
+              : "No PMS patient profile matched your account name yet.",
+          });
+          return;
+        }
 
-      setPatient(null);
-      setResolvedPatientId(null);
-      setAssessmentHistory([]);
-      setLatestAssessment(null);
-      setLastUpdatedAt(null);
+        const normalizedPatient = normalizePatient(linkResponse.data);
+        const patientId = getPatientId(normalizedPatient, user);
+        setPatient(normalizedPatient);
+        setLinkInfo(null);
+        setCachedQuery(cacheKey, linkResponse);
 
-      if (meResponse?.multipleMatches) {
-        setLinkInfo({
-          type: "multiple",
-          message:
-            "Multiple PMS profiles matched your name. Please contact support to link the correct patient profile.",
+        if (!patientId) {
+          setLatestAssessment(null);
+          setHistory([]);
+          return;
+        }
+
+        const { data: historyResponse } = await fetchWithCache({
+          key: ["assessment-history", patientId],
+          force,
+          fetcher: async () => {
+            const { data } = await api.get("/api/v1/predictive-analysis/risk-assessment/history");
+            return data;
+          },
         });
-      } else {
-        setLinkInfo({
-          type: "none",
-          message: "No PMS patient record linked yet.",
-        });
+
+        const normalizedHistory = (Array.isArray(historyResponse?.data) ? historyResponse.data : [])
+          .map(normalizeAssessment)
+          .filter(Boolean)
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+        setHistory(normalizedHistory);
+        setLatestAssessment(normalizedHistory[0] || null);
+      } catch (err) {
+        console.error("Patient dashboard load error:", err);
+        setDashboardError(err.response?.data?.message || "Unable to load your dashboard right now.");
+        setPatient(null);
+        setLatestAssessment(null);
+        setHistory([]);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error("Patient dashboard load error:", err);
-      setDashboardError(err.response?.data?.message || "Something went wrong. Please try again.");
-      setPatient(null);
-      setResolvedPatientId(null);
-      setAssessmentHistory([]);
-      setLatestAssessment(null);
-      setLastUpdatedAt(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+    },
+    [syncUser, user]
+  );
 
   useEffect(() => {
     loadDashboard();
   }, [loadDashboard]);
 
-  useEffect(() => {
-    loadAppointments();
-  }, [loadAppointments]);
-
+  // Assessments are created from hydrated PMS data on the backend, then refetched for consistency.
   const runAssessment = async () => {
     if (runningAssessment) return;
-    const pid = resolvedPatientId || user?.patient_id;
-    if (!pid) {
-      setAssessmentError("Unable to run assessment. Missing patient information.");
+
+    const patientId = getPatientId(patient, user);
+    if (!patientId) {
+      setAssessmentError("Your PMS profile is not linked yet.");
       return;
     }
 
-    setRunningAssessment(true);
-    setAssessmentError("");
-
     try {
-      const { data } = await api.post("/risk-assessment", { patient_id: pid });
+      setRunningAssessment(true);
+      setAssessmentError("");
 
-      setLatestAssessment((prev) => ({
-        ...(prev || {}),
-        risk_score: data?.risk_score ?? prev?.risk_score ?? 0,
-        risk_level: data?.risk_level ?? prev?.risk_level ?? null,
-        recommendations: Array.isArray(data?.recommendations)
-          ? data.recommendations
-          : Array.isArray(prev?.recommendations)
-          ? prev.recommendations
-          : [],
-        confidence: data?.confidence ?? prev?.confidence,
-        createdAt: data?.timestamp || new Date().toISOString(),
-        timestamp: data?.timestamp || new Date().toISOString(),
-      }));
+      const { data } = await api.post("/api/v1/predictive-analysis/risk-assessment", {
+        patient_id: patientId,
+      });
+      const normalized = normalizeAssessment(data);
 
-      setLastUpdatedAt(data?.timestamp || new Date().toISOString());
-
-      try {
-        const { data: recordsData } = await fetchWithCache({
-          key: ["health-records"],
-          force: true,
-          fetcher: async () => {
-            const { data } = await api.get("/api/v1/external/health-records");
-            return data;
-          },
-        });
-        const records = extractHealthRecords(recordsData);
-        const assessments = records
-          .filter((item) => String(item?.patient_id || item?.id || "") === String(pid))
-          .map(normalizeAssessment);
-
-        const sorted = [...assessments].sort(
-          (a, b) => new Date(b.createdAt || b.timestamp || 0) - new Date(a.createdAt || a.timestamp || 0)
-        );
-
-        setAssessmentHistory(sorted);
-        setLatestAssessment(sorted[0] || null);
-        setLastUpdatedAt(sorted[0]?.createdAt || sorted[0]?.timestamp || data?.timestamp || new Date().toISOString());
-      } catch (err) {
-        if (err?.response?.status === 404) {
-          setAssessmentHistory([]);
-          setLatestAssessment(null);
-          setLastUpdatedAt(null);
-        } else {
-          throw err;
-        }
+      if (normalized) {
+        setLatestAssessment(normalized);
+        setHistory((prev) => [normalized, ...prev.filter((item) => item?._id !== normalized?._id)]);
+        setCachedQuery(["assessment", patientId], normalized);
       }
 
-      setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 3000);
+      invalidateCachedQuery(["assessment-history", patientId]);
+      await loadDashboard({ force: true });
     } catch (err) {
-      setAssessmentError(err.response?.data?.message || "Something went wrong. Please try again.");
+      setAssessmentError(buildMissingDataMessage(err));
     } finally {
       setRunningAssessment(false);
     }
   };
 
   const hasAssessment = Boolean(latestAssessment);
-  const previousAssessment = assessmentHistory.length >= 2 ? assessmentHistory[1] : null;
-  const previousScore =
-    previousAssessment && Number.isFinite(Number(previousAssessment?.risk_score))
-      ? Number(previousAssessment.risk_score)
-      : null;
-  const currentScore =
-    hasAssessment && Number.isFinite(Number(latestAssessment?.risk_score))
-      ? Number(latestAssessment.risk_score)
-      : null;
-  const comparisonDelta =
-    previousScore !== null && currentScore !== null ? currentScore - previousScore : null;
-
-  const score = currentScore;
-  const level = hasAssessment ? latestAssessment?.risk_level || null : null;
-  const status = hasAssessment ? statusFromLevel(level) : "No assessment yet";
-  const greeting = `${timeGreeting()}, ${patient?.name?.split(" ")[0] || "Patient"}`;
-
-  const hasVitals = useMemo(() => {
-    const v = patient?.vitals || {};
-    return Boolean(v.blood_pressure || v.heart_rate || v.blood_glucose);
-  }, [patient]);
-
-  const vitals = useMemo(() => {
-    const v = patient?.vitals || {};
-    return [
-      { key: "bp", icon: Activity, label: "Blood Pressure", value: v.blood_pressure || "No recent record", tone: "#6caeb0" },
-      { key: "hr", icon: Activity, label: "Heart Rate", value: v.heart_rate ? `${v.heart_rate} bpm` : "No recent record", tone: "#74b7c1" },
-      { key: "bg", icon: Activity, label: "Blood Sugar", value: v.blood_glucose ? `${v.blood_glucose} mg/dL` : "No recent record", tone: "#7fc7bb" },
-    ];
-  }, [patient]);
-
-  const scoreInsights = useMemo(() => {
-    if (!hasAssessment) {
-      return {
-        reasons: ["No assessment yet. Your score details will appear after your first assessment."],
-        improvements: ["Start your first assessment to get personalized guidance."],
-        mainFactor: null,
-      };
-    }
-
-    const reasons = [];
-    const improvements = [];
-
-    const bpValue = String(patient?.vitals?.blood_pressure || "");
-    const bpTop = Number(bpValue.split("/")[0]);
-    if (!Number.isNaN(bpTop) && bpTop >= 130) {
-      reasons.push("Blood pressure is slightly elevated.");
-      improvements.push("Reduce salty foods and check blood pressure this week.");
-    }
-
-    const sugarValue = Number(patient?.vitals?.blood_glucose);
-    if (!Number.isNaN(sugarValue) && sugarValue >= 126) {
-      reasons.push("Blood sugar is above the usual range.");
-      improvements.push("Monitor blood sugar regularly and avoid sugary drinks.");
-    }
-
-    const hrValue = Number(patient?.vitals?.heart_rate);
-    if (!Number.isNaN(hrValue) && hrValue > 100) {
-      reasons.push("Heart rate has been a bit higher than expected.");
-      improvements.push("Take short rest breaks and stay hydrated.");
-    }
-
-    if (level === "High" || level === "Critical") reasons.push("Recent risk markers suggest higher short-term risk.");
-    else if (level === "Moderate") reasons.push("Some health markers need closer attention.");
-    else if (level === "Low") reasons.push("Most of your recent markers are in a safer range.");
-
-    const recSource = Array.isArray(latestAssessment?.recommendations) ? latestAssessment.recommendations : [];
-    if (recSource.some((r) => /alcohol/i.test(r))) {
-      reasons.push("Lifestyle habits may be increasing your risk.");
-      improvements.push("Reduce alcohol intake this week.");
-    }
-    if (recSource.some((r) => /exercise|activity|walk/i.test(r))) improvements.push("Walk 15 minutes daily.");
-    if (recSource.some((r) => /sugar|glucose/i.test(r))) improvements.push("Track your meals and reduce sugar portions.");
-
-    if (reasons.length === 0) reasons.push("A few recent readings were outside your healthy target.");
-    if (improvements.length === 0) improvements.push("Walk 15 minutes daily.", "Keep taking medication as advised.");
-
-    const cleanReasons = [...new Set(reasons)].slice(0, 4);
-    const cleanImprovements = [...new Set(improvements)].slice(0, 3);
-
-    return { reasons: cleanReasons, improvements: cleanImprovements, mainFactor: cleanReasons[0] || null };
-  }, [hasAssessment, latestAssessment, patient, level]);
-
-  const pendingAppointment = useMemo(
-    () =>
-      appointments
-        .filter((a) => a?.status === "pending")
-        .sort((a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0))
-        .at(-1) || null,
-    [appointments]
-  );
-
-  const confirmedAppointments = useMemo(
-    () =>
-      appointments
-        .filter((a) => a?.status === "confirmed")
-        .sort((a, b) => new Date(a?.scheduledDate || 0) - new Date(b?.scheduledDate || 0)),
-    [appointments]
-  );
-
-  const tomorrowReminder = useMemo(() => {
-    if (!confirmedAppointments.length) return null;
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(now.getDate() + 1);
-
-    return (
-      confirmedAppointments.find((a) => {
-        const dt = new Date(a?.scheduledDate);
-        return (
-          dt.getFullYear() === tomorrow.getFullYear() &&
-          dt.getMonth() === tomorrow.getMonth() &&
-          dt.getDate() === tomorrow.getDate()
-        );
-      }) || null
-    );
-  }, [confirmedAppointments]);
-
-  const updatedLabel = (() => {
-    if (!lastUpdatedAt) return null;
-    const dt = new Date(lastUpdatedAt);
-    if (Number.isNaN(dt.getTime())) return null;
-    const diffMs = Date.now() - dt.getTime();
-    if (diffMs < 2 * 60 * 1000) return "Updated just now";
-    return `Updated ${dt.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}`;
-  })();
+  const riskScore = Number(latestAssessment?.risk_score);
+  const healthScore = hasAssessment ? getHealthScore(riskScore) : null;
+  const riskLevel = latestAssessment?.risk_level || "Low";
+  const tone = RISK_TONE[riskLevel] || RISK_TONE.Low;
+  const topRiskFactor = getTopRiskFactor(latestAssessment, patient);
+  const recommendations = getRecommendations(latestAssessment);
+  const primaryAction = recommendations[0] || "Keep your next preventive checkup on schedule.";
+  const vitals = useMemo(() => getVitalCards(patient), [patient]);
+  const previous = history[1] || null;
+  const previousHealthScore = previous ? getHealthScore(previous.risk_score) : null;
+  const healthScoreDelta =
+    previousHealthScore !== null && healthScore !== null ? healthScore - previousHealthScore : null;
 
   if (loading) {
     return (
-      <div className="dashboard-shell">
+      <div className="dashboard-shell patient-dashboard-page">
         <Sidebar />
-        <main className="dashboard-main" style={{ padding: "1rem 1.15rem" }}>
-          <div className="hero-card">Loading your dashboard...</div>
+        <main className="dashboard-main patient-dashboard-main">
+          <section className="patient-dashboard-surface">Loading your dashboard...</section>
         </main>
       </div>
     );
@@ -422,10 +286,15 @@ export default function PatientDashboard() {
 
   if (dashboardError) {
     return (
-      <div className="dashboard-shell">
+      <div className="dashboard-shell patient-dashboard-page">
         <Sidebar />
-        <main className="dashboard-main" style={{ padding: "1rem 1.15rem" }}>
-          <div className="hero-card">{dashboardError}</div>
+        <main className="dashboard-main patient-dashboard-main">
+          <section className="patient-dashboard-surface">
+            <p>{dashboardError}</p>
+            <button type="button" className="patient-dashboard-secondary" onClick={() => loadDashboard({ force: true })}>
+              Try again
+            </button>
+          </section>
         </main>
       </div>
     );
@@ -435,385 +304,181 @@ export default function PatientDashboard() {
     return (
       <NotLinkedState
         title={linkInfo?.type === "multiple" ? "Multiple profiles found" : "You're not connected yet"}
-        description={linkInfo?.message || "Start assessment to create your profile"}
-        primaryText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
-        onPrimary={runAssessment}
+        description={linkInfo?.message || "No PMS patient profile is linked to this account."}
+        primaryText="Check again"
+        onPrimary={() => loadDashboard({ force: true })}
       />
     );
   }
 
-  if (!hasAssessment) {
-    return (
-      <div className="dashboard-shell">
-        <Sidebar />
-        <main
-          className="dashboard-main"
-          style={{ padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto", width: "100%" }}
-        >
-          <section
-            style={{
-              background: "#ffffff",
-              borderRadius: "14px",
-              border: "1px solid #e5edf3",
-              boxShadow: "0 2px 10px rgba(10,40,70,0.04)",
-              padding: "0.95rem",
-              marginBottom: "0.85rem",
-              transition: "box-shadow 180ms ease, border-color 180ms ease",
-            }}
+  return (
+    <div className="dashboard-shell patient-dashboard-page">
+      <Sidebar />
+
+      <main className="dashboard-main patient-dashboard-main">
+        <header className="patient-dashboard-header">
+          <div>
+            <p className="patient-dashboard-kicker">Hello, {getPatientFirstName(patient?.name)}</p>
+            <h1>Your Health Score</h1>
+          </div>
+          <button
+            type="button"
+            className="patient-dashboard-secondary"
+            onClick={() => loadDashboard({ force: true })}
+            aria-label="Refresh dashboard"
           >
-            <div style={{ fontSize: "0.95rem", color: "#355069", marginBottom: "0.3rem" }}>{greeting}</div>
-            <div
-              style={{
-                fontSize: "1.2rem",
-                fontWeight: 700,
-                color: "#1e3a56",
-                marginBottom: "0.15rem",
-                fontFamily: "Lora, serif",
-              }}
-            >
-              Your Health Score
+            <RefreshCw size={15} />
+            Refresh
+          </button>
+        </header>
+
+        <section className="patient-dashboard-hero">
+          <div className="patient-dashboard-score-panel">
+            <RadialScore score={healthScore} color={tone.stroke} />
+            <div className="patient-dashboard-risk-row">
+              <RiskBadge level={riskLevel} large />
+              {hasAssessment && <span className="patient-dashboard-date">Assessed {formatDate(latestAssessment?.createdAt)}</span>}
             </div>
-            <div style={{ fontSize: "0.86rem", color: "#5f7488", marginBottom: "0.75rem" }}>
-              {heroMessage(level, hasAssessment)}
+          </div>
+
+          <div className="patient-dashboard-focus">
+            <div className="patient-dashboard-summary">
+              <p className="patient-dashboard-label">What matters most</p>
+              <h2>{hasAssessment ? topRiskFactor : "First assessment"}</h2>
+              <p>{getSummary(riskLevel, hasAssessment)}</p>
             </div>
 
-            <EmptyState
-              compact
-              title="No progress yet"
-              description="Start assessment to create your profile"
-              ctaText={runningAssessment ? "Analyzing your health..." : "Start assessment to create your profile"}
-              onCta={runAssessment}
-            />
+            <div className="patient-dashboard-action" style={{ background: tone.soft, color: tone.text }}>
+              <ShieldCheck size={18} />
+              <span>{primaryAction}</span>
+            </div>
+
+            {healthScoreDelta !== null && (
+              <p className="patient-dashboard-delta">
+                {healthScoreDelta > 0
+                  ? `Improved by ${healthScoreDelta} points since your last assessment.`
+                  : healthScoreDelta < 0
+                  ? `Down ${Math.abs(healthScoreDelta)} points since your last assessment.`
+                  : "Stable since your last assessment."}
+              </p>
+            )}
+
+            <button
+              type="button"
+              className="patient-dashboard-primary"
+              onClick={runAssessment}
+              disabled={runningAssessment}
+            >
+              {runningAssessment ? "Analyzing..." : hasAssessment ? "Update Assessment" : "Run Assessment"}
+              <ArrowRight size={15} />
+            </button>
+
+            {assessmentError && <div className="patient-dashboard-error">{assessmentError}</div>}
+          </div>
+        </section>
+
+        {!hasAssessment ? (
+          <EmptyState
+            compact
+            title="No assessment yet"
+            description="Run your first assessment to see your health score, top risk factor, and next best action."
+            ctaText={runningAssessment ? "Analyzing..." : "Run Assessment"}
+            onCta={runAssessment}
+          />
+        ) : (
+          <section className="patient-dashboard-grid">
+            <article className="patient-dashboard-card patient-dashboard-card-span">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Recommended next steps</p>
+                  <h3>Small actions with the most value</h3>
+                </div>
+                <HeartPulse size={18} />
+              </div>
+
+              <div className="patient-dashboard-actions-list">
+                {recommendations.map((item, index) => (
+                  <div key={item} className="patient-dashboard-action-item">
+                    <span>{index + 1}</span>
+                    <p>{item}</p>
+                  </div>
+                ))}
+              </div>
+            </article>
+
+            <article className="patient-dashboard-card">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Core vitals</p>
+                  <h3>Recent readings</h3>
+                </div>
+                <Activity size={18} />
+              </div>
+
+              <div className="patient-dashboard-vitals">
+                {vitals.map((vital) => (
+                  <div key={vital.key} className="patient-dashboard-vital">
+                    <div>
+                      <p>{vital.label}</p>
+                      <strong>{vital.value}</strong>
+                    </div>
+                    <span className={`patient-dashboard-vital-status patient-dashboard-vital-status-${vital.tone}`}>
+                      {vital.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </article>
+
+            <article className="patient-dashboard-card">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Care guidance</p>
+                  <h3>Who can help</h3>
+                </div>
+                <Stethoscope size={18} />
+              </div>
+
+              <div className="patient-dashboard-chips">
+                {(latestAssessment?.suggested_specialist || []).slice(0, 3).map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+                {(latestAssessment?.suggested_specialist || []).length === 0 && <p>No specialist suggestion yet.</p>}
+              </div>
+            </article>
           </section>
-        </main>
-      </div>
-    );
-  }
+        )}
+
+        {latestAssessment?.disclaimer && <p className="patient-dashboard-disclaimer">{latestAssessment.disclaimer}</p>}
+      </main>
+    </div>
+  );
+}
+
+function RadialScore({ score, color }) {
+  // SVG keeps the score visualization lightweight and avoids dashboard chart dependencies.
+  const normalized = score === null || score === undefined ? 0 : Math.max(0, Math.min(100, Number(score) || 0));
+  const radius = 48;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference - (normalized / 100) * circumference;
 
   return (
-    <div className="dashboard-shell">
-      <style>
-        {`
-          @keyframes scorePulseIn {
-            0% { opacity: 0.92; transform: scale(1.02); }
-            100% { opacity: 1; transform: scale(1); }
-          }
-        `}
-      </style>
-
-      <Sidebar />
-      <main
-        className="dashboard-main"
-        style={{ padding: "1rem 1.15rem", maxWidth: "1200px", margin: "0 auto", width: "100%" }}
-      >
-        <section
-          style={{
-            background: "#ffffff",
-            borderRadius: "14px",
-            border: "1px solid #e5edf3",
-            boxShadow: "0 2px 10px rgba(10,40,70,0.04)",
-            padding: "0.95rem",
-            marginBottom: "0.85rem",
-            transition: "box-shadow 180ms ease, border-color 180ms ease",
-          }}
-        >
-          <div style={{ fontSize: "0.95rem", color: "#355069", marginBottom: "0.3rem" }}>{greeting}</div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#1e3a56", marginBottom: "0.15rem", fontFamily: "Lora, serif" }}>
-            Your Health Score
-          </div>
-          <div style={{ fontSize: "0.86rem", color: "#5f7488", marginBottom: "0.75rem" }}>{heroMessage(level, hasAssessment)}</div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 330px) 1fr", gap: "0.75rem", alignItems: "start" }}>
-            <div
-              style={{
-                background: "#f8fbfd",
-                border: "1px solid #dce9f2",
-                borderRadius: "12px",
-                padding: "0.85rem",
-                animation: showSuccess ? "scorePulseIn 220ms ease-out" : "none",
-              }}
-            >
-              <div style={{ fontSize: "0.75rem", color: "#5f7488", marginBottom: "0.28rem", fontWeight: 600 }}>
-                Your latest assessment result
-              </div>
-              <div style={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1, color: "#1f4f73" }}>{hasAssessment ? score : "--"}</div>
-
-              <div
-                style={{
-                  marginTop: "0.52rem",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "0.35rem",
-                  borderRadius: "999px",
-                  padding: "0.2rem 0.65rem",
-                  fontSize: "0.75rem",
-                  fontWeight: 600,
-                  background: status === "Good" ? "#e8f6ef" : hasAssessment ? "#fff3ea" : "#ecf4fb",
-                  color: status === "Good" ? "#1d7a4f" : hasAssessment ? "#a45b22" : "#335d7a",
-                }}
-              >
-                {status}
-              </div>
-
-              {showSuccess && (
-                <div
-                  style={{
-                    marginTop: "0.45rem",
-                    fontSize: "0.76rem",
-                    color: "#166534",
-                    background: "#ecfdf3",
-                    border: "1px solid #ccebd8",
-                    borderRadius: "8px",
-                    padding: "0.28rem 0.45rem",
-                  }}
-                >
-                  Your health score has been updated
-                </div>
-              )}
-
-              <div style={{ fontSize: "0.79rem", color: "#5f7488", marginTop: "0.55rem" }}>
-                {updatedLabel ||
-                  (hasAssessment
-                    ? `You completed your last assessment on ${displayDate(latestAssessment?.createdAt || latestAssessment?.timestamp)}.`
-                    : "You haven’t taken your assessment yet.")}
-              </div>
-
-              {hasAssessment && previousScore !== null && (
-                <div style={{ marginTop: "0.4rem", fontSize: "0.77rem", color: "#48657a" }}>
-                  Previous: {previousScore} → Now: {currentScore}
-                  <span style={{ marginLeft: "0.35rem", fontWeight: 700, color: "#2f5f7f" }}>
-                    {comparisonDelta > 0 ? "↑ improving" : comparisonDelta < 0 ? "↓ needs attention" : "→ no change"}
-                  </span>
-                </div>
-              )}
-
-              <button
-                type="button"
-                onClick={runAssessment}
-                disabled={runningAssessment}
-                style={{
-                  marginTop: "0.72rem",
-                  border: "none",
-                  background: hasAssessment ? "#2b6b8d" : "#1f5c84",
-                  color: "#fff",
-                  borderRadius: "999px",
-                  padding: "0.44rem 0.84rem",
-                  fontSize: "0.8rem",
-                  fontWeight: 700,
-                  cursor: runningAssessment ? "not-allowed" : "pointer",
-                  opacity: runningAssessment ? 0.75 : 1,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "0.35rem",
-                }}
-              >
-                {runningAssessment ? "Analyzing your health..." : hasAssessment ? "Run New Assessment" : "Start Assessment"}
-                <ArrowRight size={14} />
-              </button>
-
-              {assessmentError && (
-                <div
-                  style={{
-                    marginTop: "0.45rem",
-                    fontSize: "0.76rem",
-                    color: "#b42318",
-                    background: "#fff4f2",
-                    border: "1px solid #ffd6d1",
-                    borderRadius: "8px",
-                    padding: "0.32rem 0.48rem",
-                  }}
-                >
-                  {assessmentError}
-                </div>
-              )}
-            </div>
-
-            <div style={{ background: "#f9fbfd", border: "1px solid #e3edf4", borderRadius: "12px", overflow: "hidden" }}>
-              <button
-                type="button"
-                onClick={() => setShowWhyScore((prev) => !prev)}
-                style={{
-                  width: "100%",
-                  border: "none",
-                  background: "transparent",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  padding: "0.8rem 0.9rem",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  fontSize: "0.88rem",
-                  fontWeight: 600,
-                  color: "#2a4963",
-                }}
-              >
-                <span>Why this score?</span>
-                <ChevronDown
-                  size={16}
-                  style={{
-                    transform: showWhyScore ? "rotate(180deg)" : "rotate(0deg)",
-                    transition: "transform 180ms ease",
-                  }}
-                />
-              </button>
-
-              <div
-                style={{
-                  maxHeight: showWhyScore ? "320px" : "0px",
-                  opacity: showWhyScore ? 1 : 0,
-                  transition: "max-height 180ms ease, opacity 180ms ease",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    borderTop: "1px solid #e3edf4",
-                    padding: showWhyScore ? "0.8rem 0.9rem" : "0 0.9rem",
-                    transition: "padding 180ms ease",
-                  }}
-                >
-                  {scoreInsights.mainFactor && (
-                    <div
-                      style={{
-                        marginBottom: "0.65rem",
-                        background: "#edf6fb",
-                        border: "1px solid #d6e9f4",
-                        borderRadius: "10px",
-                        padding: "0.5rem 0.65rem",
-                      }}
-                    >
-                      <div style={{ fontSize: "0.72rem", color: "#537089", marginBottom: "0.2rem", fontWeight: 600 }}>
-                        Main factor
-                      </div>
-                      <div style={{ fontSize: "0.83rem", color: "#24465f" }}>{scoreInsights.mainFactor}</div>
-                    </div>
-                  )}
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.9rem" }}>
-                    <div>
-                      <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#355069", marginBottom: "0.35rem" }}>
-                        What affected your score
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: "1rem", color: "#516b7f", fontSize: "0.8rem", lineHeight: 1.5 }}>
-                        {scoreInsights.reasons.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    <div>
-                      <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#355069", marginBottom: "0.35rem" }}>
-                        What you can improve
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: "1rem", color: "#516b7f", fontSize: "0.8rem", lineHeight: 1.5 }}>
-                        {scoreInsights.improvements.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section
-          style={{
-            background: "#ffffff",
-            borderRadius: "14px",
-            border: "1px solid #e5edf3",
-            boxShadow: "0 2px 10px rgba(10,40,70,0.04)",
-            padding: "0.85rem 0.95rem",
-            marginBottom: "0.85rem",
-          }}
-        >
-          <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#1f3f5a", marginBottom: "0.55rem" }}>
-            Upcoming Appointments
-          </div>
-
-          {appointmentsLoading ? (
-            <div style={{ fontSize: "0.82rem", color: "#5f7488" }}>Loading appointments...</div>
-          ) : appointments.length === 0 ? (
-            <div style={{ fontSize: "0.82rem", color: "#6b8093" }}>No appointments yet.</div>
-          ) : (
-            <div style={{ display: "grid", gap: "0.45rem" }}>
-              {appointments.map((appt) => (
-                <div
-                  key={appt._id}
-                  style={{
-                    border: "1px solid #e5edf3",
-                    borderRadius: "10px",
-                    padding: "0.52rem 0.62rem",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    background: "#fcfeff",
-                  }}
-                >
-                  <div style={{ fontSize: "0.82rem", color: "#2d4b63" }}>
-                    {new Date(appt.scheduledDate).toLocaleString("en-PH", {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: "0.73rem",
-                      fontWeight: 700,
-                      borderRadius: "999px",
-                      padding: "0.2rem 0.55rem",
-                      background:
-                        appt.status === "confirmed" ? "#e8f6ef" : appt.status === "declined" ? "#fff1f2" : "#eef5fb",
-                      color:
-                        appt.status === "confirmed" ? "#1d7a4f" : appt.status === "declined" ? "#9f1239" : "#355d7a",
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {appt.status}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {hasVitals ? (
-          <section
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "0.7rem",
-              marginBottom: "0.85rem",
-            }}
-          >
-            {vitals.map((v) => (
-              <article
-                key={v.key}
-                style={{
-                  background: "#ffffff",
-                  border: "1px solid #e4edf4",
-                  borderRadius: "12px",
-                  padding: "0.8rem",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "0.45rem", marginBottom: "0.25rem" }}>
-                  <v.icon size={14} color={v.tone} />
-                  <div style={{ fontSize: "0.8rem", color: "#557086" }}>{v.label}</div>
-                </div>
-                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#223f57" }}>{v.value}</div>
-              </article>
-            ))}
-          </section>
-        ) : (
-          <div style={{ marginBottom: "0.85rem" }}>
-            <EmptyState compact title="No vitals yet" description="Your health data will appear here once recorded." />
-          </div>
-        )}
-      </main>
+    <div className="patient-dashboard-radial" style={{ "--score-color": color }}>
+      <svg viewBox="0 0 120 120" role="img" aria-label="Health score">
+        <circle className="patient-dashboard-radial-track" cx="60" cy="60" r={radius} />
+        <circle
+          className="patient-dashboard-radial-progress"
+          cx="60"
+          cy="60"
+          r={radius}
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+        />
+      </svg>
+      <div className="patient-dashboard-radial-text">
+        <strong>{score === null || score === undefined ? "--" : normalized}</strong>
+        <span>Health Score</span>
+      </div>
     </div>
   );
 }
