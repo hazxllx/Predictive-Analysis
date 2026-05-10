@@ -139,6 +139,7 @@ export default function PatientDashboard() {
   const [patient, setPatient] = useState(null);
   const [latestAssessment, setLatestAssessment] = useState(null);
   const [history, setHistory] = useState([]);
+  const [linkInfo, setLinkInfo] = useState(null);
 
   // Separate request lifecycle states to avoid premature/fake error rendering
   const [loading, setLoading] = useState(true);
@@ -148,7 +149,6 @@ export default function PatientDashboard() {
 
   const [runningAssessment, setRunningAssessment] = useState(false);
   const [assessmentError, setAssessmentError] = useState("");
-  const [linkInfo, setLinkInfo] = useState(null);
 
   const [retryCount, setRetryCount] = useState(0);
   const maxRetries = 4;

@@ -1,8 +1,8 @@
 import axios from "axios";
 
-// Vite exposes only VITE_* values. Keep the client on one API base URL variable.
-const API = import.meta.env.VITE_API_URL || "http://localhost:5000";
-const normalizedApiUrl = API.replace(/\/+$/, "");
+import { API_URL } from "../config/env";
+
+const normalizedApiUrl = (API_URL || "").replace(/\/+$/, "");
 
 const api = axios.create({
   baseURL: normalizedApiUrl,

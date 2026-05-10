@@ -1,6 +1,16 @@
-# Environment files (only root .env is used)
+# Environment files (root .env is used, plus platform .env files)
 .env
 .env.*
+!.env.example
+
+# Frontend/Vercel env files
+frontend/.env
+frontend/.env.*
+!.env.example
+
+# Backend/Railway env files
+backend/.env
+backend/.env.*
 !.env.example
 
 # Dependencies

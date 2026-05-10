@@ -58,18 +58,53 @@ async function startServer() {
    * Security Headers (Helmet)
    * - Content Security Policy, X-Frame-Options, XSS-Filter, etc.
    */
-  app.use(helmet());
+  app.use(
+    helmet({
+      // Keep defaults; Railway/Vercel environments vary on CSP needs
+      // If you need strict CSP later, tighten here.
+      contentSecurityPolicy: false,
+    })
+  );
+
+  /**
+   * Request protection defaults
+   * - Prevent oversized payload abuse (important on public endpoints)
+   * - Keep behavior predictable in production (Railway)
+   */
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
   /**
    * CORS Configuration
-   * - Defaults to wildcard in development for local testing
-   * - Production should set CORS_ORIGIN to the deployed frontend URL
+   * - Permissive in development
+   * - Strict allowlist in production using env vars
+   *   - CORS_ORIGIN: single origin
+   *   - CORS_ORIGINS: comma-separated allowlist (preferred for multi-origin)
    */
-  const corsOrigin = process.env.CORS_ORIGIN || "*";
-  app.use(cors({ origin: corsOrigin }));
+  const isProd = (process.env.NODE_ENV || "").toLowerCase() === "production";
+  const corsOriginsEnv = process.env.CORS_ORIGINS || "";
+  const corsOrigins = corsOriginsEnv
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  // Parse JSON bodies early
-  app.use(express.json());
+  const corsOriginSingle = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.trim() : "";
+
+  const allowlist = isProd
+    ? Array.from(new Set([...(corsOrigins || []), ...(corsOriginSingle ? [corsOriginSingle] : [])]))
+    : ["*"];
+
+  app.use(
+    cors({
+      origin: (origin, cb) => {
+        // Non-browser requests (no Origin header) should be allowed by default
+        if (!origin) return cb(null, true);
+        if (!isProd) return cb(null, true);
+        return allowlist.includes(origin) ? cb(null, true) : cb(new Error("CORS_NOT_ALLOWED"), false);
+      },
+      credentials: true,
+    })
+  );
 
   // Audit middleware: Capture client IP for all requests (must be early)
   app.use(captureClientIP);
@@ -83,7 +118,12 @@ async function startServer() {
   app.use("/api/v1/predictive-analysis", require("./routes/assessment"));
   app.use("/admin", require("./routes/admin"));
 
-  // Health check endpoint (used by load balancers / monitoring)
+  // Health check endpoints (used by load balancers / monitoring)
+  // - /api/v1/health (preferred for your deployment requirements)
+  // - /health (backwards compatibility for existing monitors)
+  app.get("/api/v1/health", (_, res) =>
+    res.json({ success: true, status: "healthy" })
+  );
   app.get("/health", (_, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
   app.get("/", (_, res) => res.json({ message: "Pulse Prophet API running" }));
 
