@@ -1,3 +1,14 @@
+/**
+ * Patient Normalization Utilities
+ *
+ * Helper functions for cleaning and normalizing patient data:
+ * - Text cleaning (removes null/undefined/"n/a")
+ * - Title case conversion
+ * - Unique array push (case-insensitive deduplication)
+ * - Patient object normalization from PMS data
+ */
+
+// Convert a string to Title Case
 const toTitleCase = (value = "") =>
   String(value)
     .trim()
@@ -7,6 +18,7 @@ const toTitleCase = (value = "") =>
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 
+// Strip empty/null/undefined/"n/a" values and return a clean string
 export const cleanText = (value) => {
   if (value === null || value === undefined) return "";
   const text = String(value).trim();
@@ -20,6 +32,7 @@ export const cleanText = (value) => {
   return text;
 };
 
+// Push a value into an array only if it is not already present (case-insensitive)
 const pushUnique = (arr, value) => {
   const text = cleanText(value);
   if (!text) return;
@@ -29,6 +42,7 @@ const pushUnique = (arr, value) => {
   }
 };
 
+// Clean and convert a category string to Title Case
 const normalizeCategory = (value = "") => {
   const normalized = cleanText(value).replace(/[_-]+/g, " ");
   return normalized ? toTitleCase(normalized) : "";

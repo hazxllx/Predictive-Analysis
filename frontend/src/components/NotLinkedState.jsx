@@ -1,3 +1,9 @@
+/**
+ * Not Linked State Component
+ *
+ * Shown when a patient user has no PMS record linked to their account.
+ * Provides guidance and an optional action to initiate linking.
+ */
 import React from "react";
 import { Link2 } from "lucide-react";
 import Sidebar from "./Sidebar";
@@ -39,14 +45,12 @@ export default function NotLinkedState({
 const styles = {
   layout: {
     display: "flex",
-    height: "100vh",
-    overflow: "hidden",
+    minHeight: "100vh",
     background: "#f5f8fb",
   },
   main: {
     flex: 1,
     minWidth: 0,
-    overflowY: "auto",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",

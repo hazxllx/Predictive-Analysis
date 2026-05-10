@@ -10,28 +10,75 @@
   --gray-50: #f8fafc;
   --gray-100: #f1f5f9;
   --gray-200: #e2e8f0;
+  --gray-300: #cbd5e1;
   --gray-400: #94a3b8;
+  --gray-500: #64748b;
   --gray-600: #475569;
+  --gray-700: #334155;
   --gray-800: #1e293b;
+  --gray-900: #0f172a;
   --red: #ef4444;
   --orange: #f97316;
   --yellow: #eab308;
   --green: #22c55e;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
-  --shadow: 0 4px 16px rgba(0,0,0,0.10);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.13);
-  --radius: 14px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-lg: 0 6px 20px rgba(0,0,0,0.08);
+  --radius: 12px;
   --radius-sm: 8px;
-  --sidebar-w: 240px;
+  --sidebar-w: 220px;
+
+  --bg-body: var(--gray-50);
+  --bg-card: var(--white);
+  --bg-sidebar: var(--white);
+  --text-main: var(--gray-800);
+  --text-muted: var(--gray-500);
+  --border-color: var(--gray-200);
+  --input-bg: #fafafa;
+}
+
+[data-theme="dark"] {
+  --primary: #38bdf8;
+  --primary-dark: #0ea5e9;
+  --teal: #14b8a6;
+  --teal-light: #115e59;
+  --blue-light: #0c4a6e;
+  --white: #0f172a;
+  --gray-50: #0b1221;
+  --gray-100: #111827;
+  --gray-200: #1e293b;
+  --gray-300: #334155;
+  --gray-400: #475569;
+  --gray-500: #94a3b8;
+  --gray-600: #cbd5e1;
+  --gray-700: #e2e8f0;
+  --gray-800: #f1f5f9;
+  --gray-900: #ffffff;
+  --red: #f87171;
+  --orange: #fb923c;
+  --yellow: #facc15;
+  --green: #4ade80;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.25);
+  --shadow: 0 4px 12px rgba(0,0,0,0.30);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.40);
+
+  --bg-body: #0b1221;
+  --bg-card: #111827;
+  --bg-sidebar: #0f172a;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --border-color: #1e293b;
+  --input-bg: #0f172a;
 }
 
 html, body, #root {
-  height: 100%;
+  min-height: 100%;
   font-family: 'Nunito', sans-serif;
-  background: var(--gray-50);
-  color: var(--gray-800);
+  background: var(--bg-body);
+  color: var(--text-main);
   font-size: 14px;
   line-height: 1.45;
+  transition: background 0.25s ease, color 0.25s ease;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -50,9 +97,23 @@ button { cursor: pointer; font-family: inherit; }
 input, select, textarea { font-family: inherit; }
 a { text-decoration: none; color: inherit; }
 
-::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 10px; }
+::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gray-400); }
+
+/* Firefox */
+* { scrollbar-width: thin; scrollbar-color: var(--gray-300) transparent; }
+
+/* Hide browser-native password reveal icons (Edge / IE / Chrome autofill) */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
+input::-webkit-credentials-auto-fill-button {
+  visibility: hidden;
+  display: none !important;
+}
 
 @keyframes spin {
   from { transform: rotate(0deg); }
@@ -74,15 +135,44 @@ a { text-decoration: none; color: inherit; }
   }
 }
 
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes softFloat {
+  0% { transform: translateY(-50%) translateX(0px); }
+  50% { transform: translateY(calc(-50% - 8px)) translateX(-6px); }
+  100% { transform: translateY(-50%) translateX(0px); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+
 .patient-card:hover {
   box-shadow: 0 6px 24px rgba(0,0,0,0.10) !important;
   transform: translateY(-2px) !important;
 }
 
 input:focus, select:focus {
-  border-color: #0ea5e9 !important;
+  border-color: var(--primary) !important;
   box-shadow: 0 0 0 3px rgba(14,165,233,0.12) !important;
-  background: white !important;
+  background: var(--bg-card) !important;
+}
+
+[data-theme="dark"] input:focus,
+[data-theme="dark"] select:focus {
+  box-shadow: 0 0 0 3px rgba(56,189,248,0.18) !important;
 }
 
 button:hover:not(:disabled) {
@@ -91,13 +181,12 @@ button:hover:not(:disabled) {
 
 .dashboard-shell {
   display: flex;
-  height: 100vh;
-  overflow: hidden;
-  background: #f5f8fb;
+  min-height: 100vh;
+  background: var(--bg-body);
 }
 
 .dashboard-main {
   flex: 1;
   min-width: 0;
-  overflow-y: auto;
+  overflow-x: hidden;
 }

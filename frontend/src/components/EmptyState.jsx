@@ -1,3 +1,9 @@
+/**
+ * Empty State Component
+ *
+ * Displays a friendly message when there is no data to show.
+ * Optionally renders a call-to-action button.
+ */
 import React from "react";
 
 export default function EmptyState({

@@ -8,9 +8,20 @@ import EmptyState from "../components/EmptyState";
 import NotLinkedState from "../components/NotLinkedState";
 import { fetchWithCache } from "../api/cachedFetch";
 import { invalidateCachedQuery, setCachedQuery } from "../api/queryCache";
-import { normalizeAssessment } from "../utils/normalizeAssessment";
-import { normalizePatient } from "../utils/normalizePatients";
+import {
+  getAssessmentRiskLevel,
+  getAssessmentRiskScore,
+  normalizeAssessment,
+} from "../utils/normalizeAssessment";
+import { cleanText, normalizePatient } from "../utils/normalizePatients";
+import { getPatientFacingRiskLabel } from "../utils/riskTone";
+import ResultTabs from "../components/ResultTabs";
+import RadialHealthScore from "../components/RadialHealthScore";
+import RecommendationList from "../components/RecommendationList";
+import { generateRecommendations } from "../utils/recommendationEngine";
 import "./PatientDashboard.css";
+
+const isDev = import.meta.env.DEV;
 
 const RISK_TONE = {
   Critical: { stroke: "#dc2626", soft: "#fef2f2", text: "#991b1b" },
@@ -32,11 +43,6 @@ function formatDate(value) {
 
 function getPatientId(patient, user) {
   return patient?.patient_id || patient?.id || user?.patient_id || null;
-}
-
-function getHealthScore(riskScore) {
-  if (!Number.isFinite(Number(riskScore))) return null;
-  return Math.max(0, Math.min(100, 100 - Number(riskScore)));
 }
 
 function getTopRiskFactor(assessment, patient) {
@@ -62,11 +68,6 @@ function getSummary(level, hasAssessment) {
   if (level === "Moderate") return "Some markers are worth improving this week.";
   if (level === "Low") return "Most recent markers are in a reassuring range.";
   return "Your latest assessment is ready.";
-}
-
-function getRecommendations(assessment) {
-  const list = Array.isArray(assessment?.recommendations) ? assessment.recommendations : [];
-  return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 3);
 }
 
 function parseBloodPressure(value) {
@@ -129,34 +130,58 @@ function buildMissingDataMessage(error) {
   if (!Array.isArray(fields) || fields.length === 0) {
     return error?.response?.data?.message || "Assessment could not be completed.";
   }
-
   return `PMS data is missing: ${fields.join(", ")}. Please ask your care team to update your profile.`;
 }
 
 export default function PatientDashboard() {
-  const { user, syncUser } = useAuth();
+  const { user, syncUser, loading: authLoading, authReady } = useAuth();
+
   const [patient, setPatient] = useState(null);
   const [latestAssessment, setLatestAssessment] = useState(null);
   const [history, setHistory] = useState([]);
+
+  // Separate request lifecycle states to avoid premature/fake error rendering
   const [loading, setLoading] = useState(true);
-  const [runningAssessment, setRunningAssessment] = useState(false);
+  const [phase, setPhase] = useState("loading"); // 'loading' | 'empty' | 'error' | 'success'
   const [dashboardError, setDashboardError] = useState("");
+  const [loadingReason, setLoadingReason] = useState("Loading your health data...");
+
+  const [runningAssessment, setRunningAssessment] = useState(false);
   const [assessmentError, setAssessmentError] = useState("");
   const [linkInfo, setLinkInfo] = useState(null);
 
-  // The patient dashboard uses /patients/me as the single PMS link source of truth.
+  const [retryCount, setRetryCount] = useState(0);
+  const maxRetries = 4;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   const loadDashboard = useCallback(
     async ({ force = false } = {}) => {
+      if (!authReady || authLoading) return;
       if (!user) return;
 
-      try {
-        setDashboardError("");
-        setAssessmentError("");
+      const startedAt = Date.now();
 
-        const cacheKey = ["patients-me", user?.id || user?.email || "current"];
+      setDashboardError("");
+      setAssessmentError("");
+      setLinkInfo(null);
+
+      // If we are retrying, keep phase as loading (never render error prematurely)
+      setPhase("loading");
+      setLoading(true);
+      setLoadingReason("Loading your health data...");
+      setRetryCount((c) => (force ? 0 : c));
+
+      const cacheKey = ["patients-me", user?.id || user?.email || "current"];
+
+      const attemptFetch = async (attempt) => {
+        const attemptStart = Date.now();
+        if (isDev) console.log(`[Dashboard] loadDashboard attempt ${attempt}/${maxRetries}`);
+
+        // 1) fetch patient profile (PMS sync may be delayed)
         const { data: linkResponse } = await fetchWithCache({
           key: cacheKey,
-          force,
+          force: force || attempt > 0,
           fetcher: async () => {
             const { data } = await api.get("/patients/me");
             return data;
@@ -167,7 +192,23 @@ export default function PatientDashboard() {
           syncUser(linkResponse.user);
         }
 
-        if (!(linkResponse?.linked && linkResponse?.data)) {
+        const linked = Boolean(linkResponse?.linked && linkResponse?.data);
+        if (!linked) {
+          // Treat as "not ready yet" rather than fatal error to prevent false error flashes.
+          // Backoff + retry in case PMS sync is still catching up.
+          if (attempt < maxRetries) {
+            setLoadingReason(
+              linkResponse?.multipleMatches
+                ? "Finalizing your patient profile link..."
+                : "Syncing your health data (this can take a moment)..."
+            );
+            setRetryCount(attempt + 1);
+            const delay = Math.min(1000 * (2 ** attempt), 5000);
+            await sleep(delay);
+            return attemptFetch(attempt + 1);
+          }
+
+          // Retries exhausted -> now we can show real "not linked" state.
           setPatient(null);
           setLatestAssessment(null);
           setHistory([]);
@@ -177,11 +218,14 @@ export default function PatientDashboard() {
               ? "Multiple PMS profiles matched your name. Your care team can link the correct record."
               : "No PMS patient profile matched your account name yet.",
           });
-          return;
+          setPhase("empty");
+          setLoading(false);
+          return null;
         }
 
         const normalizedPatient = normalizePatient(linkResponse.data);
         const patientId = getPatientId(normalizedPatient, user);
+
         setPatient(normalizedPatient);
         setLinkInfo(null);
         setCachedQuery(cacheKey, linkResponse);
@@ -189,12 +233,15 @@ export default function PatientDashboard() {
         if (!patientId) {
           setLatestAssessment(null);
           setHistory([]);
-          return;
+          setPhase("empty");
+          setLoading(false);
+          return null;
         }
 
+        // 2) fetch assessment history
         const { data: historyResponse } = await fetchWithCache({
           key: ["assessment-history", patientId],
-          force,
+          force: force || attempt > 0,
           fetcher: async () => {
             const { data } = await api.get("/api/v1/predictive-analysis/risk-assessment/history");
             return data;
@@ -208,25 +255,35 @@ export default function PatientDashboard() {
 
         setHistory(normalizedHistory);
         setLatestAssessment(normalizedHistory[0] || null);
+
+        setPhase("success");
+        if (isDev) console.log(`[Dashboard] attempt ${attempt} completed in ${Date.now() - attemptStart}ms`);
+        return normalizedHistory;
+      };
+
+      try {
+        await attemptFetch(0);
       } catch (err) {
-        console.error("Patient dashboard load error:", err);
-        setDashboardError(err.response?.data?.message || "Unable to load your dashboard right now.");
+        // Retries cover most "PMS delayed" scenarios; if we still land here, it's real failure.
+        setPhase("error");
+        setDashboardError(err?.response?.data?.message || "Unable to load your dashboard right now.");
         setPatient(null);
         setLatestAssessment(null);
         setHistory([]);
       } finally {
         setLoading(false);
+        if (isDev) console.log(`[Dashboard] total loadDashboard time ${Date.now() - startedAt}ms`);
       }
     },
-    [syncUser, user]
+    [authReady, authLoading, user, syncUser]
   );
 
   useEffect(() => {
+    if (authLoading || !authReady) return;
     loadDashboard();
-  }, [loadDashboard]);
+  }, [loadDashboard, authLoading, authReady]);
 
-  // Assessments are created from hydrated PMS data on the backend, then refetched for consistency.
-  const runAssessment = async () => {
+  const runAssessment = useCallback(async () => {
     if (runningAssessment) return;
 
     const patientId = getPatientId(patient, user);
@@ -257,23 +314,61 @@ export default function PatientDashboard() {
     } finally {
       setRunningAssessment(false);
     }
-  };
+  }, [runningAssessment, patient, user, loadDashboard]);
 
   const hasAssessment = Boolean(latestAssessment);
-  const riskScore = Number(latestAssessment?.risk_score);
-  const healthScore = hasAssessment ? getHealthScore(riskScore) : null;
-  const riskLevel = latestAssessment?.risk_level || "Low";
+  const riskScore = getAssessmentRiskScore(latestAssessment);
+  const riskLevel = getAssessmentRiskLevel(latestAssessment) || "Low";
+  const patientFacingRiskLabel = getPatientFacingRiskLabel(riskLevel);
   const tone = RISK_TONE[riskLevel] || RISK_TONE.Low;
-  const topRiskFactor = getTopRiskFactor(latestAssessment, patient);
-  const recommendations = getRecommendations(latestAssessment);
-  const primaryAction = recommendations[0] || "Keep your next preventive checkup on schedule.";
-  const vitals = useMemo(() => getVitalCards(patient), [patient]);
-  const previous = history[1] || null;
-  const previousHealthScore = previous ? getHealthScore(previous.risk_score) : null;
-  const healthScoreDelta =
-    previousHealthScore !== null && healthScore !== null ? healthScore - previousHealthScore : null;
+  const topRiskFactor = useMemo(() => getTopRiskFactor(latestAssessment, patient), [latestAssessment, patient]);
+  const summaryText = useMemo(() => getSummary(riskLevel, hasAssessment), [riskLevel, hasAssessment]);
+  const recommendations = useMemo(
+    () => generateRecommendations({ patient, assessment: latestAssessment }),
+    [patient, latestAssessment]
+  );
 
-  if (loading) {
+  const primaryAction = recommendations[0]?.title || "Keep your next preventive checkup on schedule.";
+  const vitals = useMemo(() => getVitalCards(patient), [patient]);
+  const specialists = useMemo(
+    () => (Array.isArray(latestAssessment?.suggested_specialist) ? latestAssessment.suggested_specialist : []),
+    [latestAssessment]
+  );
+  const labTests = useMemo(
+    () => (Array.isArray(latestAssessment?.lab_tests) ? latestAssessment.lab_tests : []),
+    [latestAssessment]
+  );
+  const lifestyleChips = useMemo(() => {
+    const lifestyle = patient?.lifestyle || {};
+    const chips = [];
+    if (lifestyle.smoking) chips.push("Smoking");
+    if (lifestyle.alcohol) chips.push("Alcohol use");
+    if (cleanText(lifestyle.diet)) chips.push(cleanText(lifestyle.diet));
+    if (cleanText(lifestyle.physical_activity)) chips.push(cleanText(lifestyle.physical_activity));
+    if (cleanText(lifestyle.sodium_intake)) chips.push(`Sodium: ${cleanText(lifestyle.sodium_intake)}`);
+    if (cleanText(lifestyle.sleep_quality)) chips.push(`Sleep: ${cleanText(lifestyle.sleep_quality)}`);
+    if (cleanText(lifestyle.sedentary_behavior)) chips.push(`Sedentary: ${cleanText(lifestyle.sedentary_behavior)}`);
+    return chips;
+  }, [patient]);
+
+  const familyHistoryItems = useMemo(() => {
+    const historyMap = patient?.family_history || {};
+    return Object.entries(historyMap)
+      .filter(([, value]) => (typeof value === "boolean" ? value : Boolean(cleanText(value))))
+      .map(([key]) =>
+        String(key)
+          .replace(/_/g, " ")
+          .replace(/\b\w/g, (char) => char.toUpperCase())
+      );
+  }, [patient]);
+
+  const previous = history[1] || null;
+  const previousRiskScore = previous ? getAssessmentRiskScore(previous) : null;
+  const riskScoreDelta =
+    previousRiskScore !== null && riskScore !== null ? riskScore - previousRiskScore : null;
+
+  // While auth is hydrating, always show loading UI (no fake errors)
+  if (authLoading || !authReady || loading || phase === "loading") {
     return (
       <div className="dashboard-shell patient-dashboard-page">
         <Sidebar />
@@ -284,7 +379,7 @@ export default function PatientDashboard() {
     );
   }
 
-  if (dashboardError) {
+  if (phase === "error" && dashboardError) {
     return (
       <div className="dashboard-shell patient-dashboard-page">
         <Sidebar />
@@ -300,7 +395,8 @@ export default function PatientDashboard() {
     );
   }
 
-  if (!patient) {
+  // Only show NotLinked when we have definitively finished loading and have no patient profile.
+  if (!patient && phase !== "loading" && phase !== "error") {
     return (
       <NotLinkedState
         title={linkInfo?.type === "multiple" ? "Multiple profiles found" : "You're not connected yet"}
@@ -314,12 +410,11 @@ export default function PatientDashboard() {
   return (
     <div className="dashboard-shell patient-dashboard-page">
       <Sidebar />
-
       <main className="dashboard-main patient-dashboard-main">
         <header className="patient-dashboard-header">
           <div>
             <p className="patient-dashboard-kicker">Hello, {getPatientFirstName(patient?.name)}</p>
-            <h1>Your Health Score</h1>
+            <h1>Your Risk Assessment</h1>
           </div>
           <button
             type="button"
@@ -334,10 +429,12 @@ export default function PatientDashboard() {
 
         <section className="patient-dashboard-hero">
           <div className="patient-dashboard-score-panel">
-            <RadialScore score={healthScore} color={tone.stroke} />
+            <RadialHealthScore score={riskScore} riskLevel={riskLevel} size={92} strokeWidth={7} />
             <div className="patient-dashboard-risk-row">
               <RiskBadge level={riskLevel} large />
-              {hasAssessment && <span className="patient-dashboard-date">Assessed {formatDate(latestAssessment?.createdAt)}</span>}
+              {hasAssessment && (
+                <span className="patient-dashboard-date">Assessed {formatDate(latestAssessment?.createdAt)}</span>
+              )}
             </div>
           </div>
 
@@ -345,21 +442,22 @@ export default function PatientDashboard() {
             <div className="patient-dashboard-summary">
               <p className="patient-dashboard-label">What matters most</p>
               <h2>{hasAssessment ? topRiskFactor : "First assessment"}</h2>
-              <p>{getSummary(riskLevel, hasAssessment)}</p>
+              <p>{summaryText}</p>
+              {hasAssessment && <p className="patient-dashboard-label">Current Status: {patientFacingRiskLabel}</p>}
             </div>
 
-            <div className="patient-dashboard-action" style={{ background: tone.soft, color: tone.text }}>
+            <div className="patient-dashboard-action" style={{ color: tone.text }}>
               <ShieldCheck size={18} />
               <span>{primaryAction}</span>
             </div>
 
-            {healthScoreDelta !== null && (
+            {riskScoreDelta !== null && (
               <p className="patient-dashboard-delta">
-                {healthScoreDelta > 0
-                  ? `Improved by ${healthScoreDelta} points since your last assessment.`
-                  : healthScoreDelta < 0
-                  ? `Down ${Math.abs(healthScoreDelta)} points since your last assessment.`
-                  : "Stable since your last assessment."}
+                {riskScoreDelta < 0
+                  ? `Risk decreased by ${Math.abs(riskScoreDelta)} points since your last assessment.`
+                  : riskScoreDelta > 0
+                  ? `Risk increased by ${riskScoreDelta} points since your last assessment.`
+                  : "Risk is stable since your last assessment."}
               </p>
             )}
 
@@ -381,31 +479,12 @@ export default function PatientDashboard() {
           <EmptyState
             compact
             title="No assessment yet"
-            description="Run your first assessment to see your health score, top risk factor, and next best action."
+            description="Run your first assessment to see your risk score, top risk factor, and next best action."
             ctaText={runningAssessment ? "Analyzing..." : "Run Assessment"}
             onCta={runAssessment}
           />
         ) : (
           <section className="patient-dashboard-grid">
-            <article className="patient-dashboard-card patient-dashboard-card-span">
-              <div className="patient-dashboard-card-head">
-                <div>
-                  <p className="patient-dashboard-label">Recommended next steps</p>
-                  <h3>Small actions with the most value</h3>
-                </div>
-                <HeartPulse size={18} />
-              </div>
-
-              <div className="patient-dashboard-actions-list">
-                {recommendations.map((item, index) => (
-                  <div key={item} className="patient-dashboard-action-item">
-                    <span>{index + 1}</span>
-                    <p>{item}</p>
-                  </div>
-                ))}
-              </div>
-            </article>
-
             <article className="patient-dashboard-card">
               <div className="patient-dashboard-card-head">
                 <div>
@@ -414,7 +493,6 @@ export default function PatientDashboard() {
                 </div>
                 <Activity size={18} />
               </div>
-
               <div className="patient-dashboard-vitals">
                 {vitals.map((vital) => (
                   <div key={vital.key} className="patient-dashboard-vital">
@@ -422,7 +500,9 @@ export default function PatientDashboard() {
                       <p>{vital.label}</p>
                       <strong>{vital.value}</strong>
                     </div>
-                    <span className={`patient-dashboard-vital-status patient-dashboard-vital-status-${vital.tone}`}>
+                    <span
+                      className={`patient-dashboard-vital-status patient-dashboard-vital-status-${vital.tone}`}
+                    >
                       {vital.status}
                     </span>
                   </div>
@@ -438,47 +518,91 @@ export default function PatientDashboard() {
                 </div>
                 <Stethoscope size={18} />
               </div>
-
               <div className="patient-dashboard-chips">
-                {(latestAssessment?.suggested_specialist || []).slice(0, 3).map((item) => (
+                {specialists.slice(0, 4).map((item) => (
                   <span key={item}>{item}</span>
                 ))}
-                {(latestAssessment?.suggested_specialist || []).length === 0 && <p>No specialist suggestion yet.</p>}
+                {specialists.length === 0 && <p>No specialist suggestion yet.</p>}
               </div>
+              <div className="patient-dashboard-card-head" style={{ marginTop: "10px" }}>
+                <div>
+                  <p className="patient-dashboard-label">Suggested lab tests</p>
+                </div>
+              </div>
+              <div className="patient-dashboard-chips">
+                {labTests.slice(0, 4).map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+                {labTests.length === 0 && <p>No lab test suggestions yet.</p>}
+              </div>
+            </article>
+
+            <article className="patient-dashboard-card">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Lifestyle & habits</p>
+                  <h3>Daily patterns</h3>
+                </div>
+                <ShieldCheck size={18} />
+              </div>
+              <div className="patient-dashboard-chips">
+                {lifestyleChips.slice(0, 8).map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+                {lifestyleChips.length === 0 && <p>No lifestyle information available yet.</p>}
+              </div>
+            </article>
+
+            <article className="patient-dashboard-card">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Family history</p>
+                  <h3>Inherited risk context</h3>
+                </div>
+                <HeartPulse size={18} />
+              </div>
+              <div className="patient-dashboard-chips">
+                {familyHistoryItems.slice(0, 10).map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+                {familyHistoryItems.length === 0 && <p>No family history risk markers recorded.</p>}
+              </div>
+            </article>
+
+            <article className="patient-dashboard-card patient-dashboard-card-span">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Personalized guidance</p>
+                  <h3>Recommended Actions</h3>
+                </div>
+                <ShieldCheck size={18} />
+              </div>
+              <div className="patient-dashboard-recs-body">
+                {recommendations.length > 0 ? (
+                  <RecommendationList recommendations={recommendations} title="" maxPerCategory={4} />
+                ) : (
+                  <p style={{ margin: 0, color: "var(--text-muted)", fontWeight: 700 }}>
+                    No recommendations available yet. Run an assessment to generate guidance.
+                  </p>
+                )}
+              </div>
+            </article>
+
+            <article className="patient-dashboard-card patient-dashboard-card-span">
+              <div className="patient-dashboard-card-head">
+                <div>
+                  <p className="patient-dashboard-label">Score breakdown</p>
+                  <h3>Why your score looks this way</h3>
+                </div>
+                <Activity size={18} />
+              </div>
+              <ResultTabs data={latestAssessment} initialTab="Breakdown" />
             </article>
           </section>
         )}
 
         {latestAssessment?.disclaimer && <p className="patient-dashboard-disclaimer">{latestAssessment.disclaimer}</p>}
       </main>
-    </div>
-  );
-}
-
-function RadialScore({ score, color }) {
-  // SVG keeps the score visualization lightweight and avoids dashboard chart dependencies.
-  const normalized = score === null || score === undefined ? 0 : Math.max(0, Math.min(100, Number(score) || 0));
-  const radius = 48;
-  const circumference = 2 * Math.PI * radius;
-  const dashOffset = circumference - (normalized / 100) * circumference;
-
-  return (
-    <div className="patient-dashboard-radial" style={{ "--score-color": color }}>
-      <svg viewBox="0 0 120 120" role="img" aria-label="Health score">
-        <circle className="patient-dashboard-radial-track" cx="60" cy="60" r={radius} />
-        <circle
-          className="patient-dashboard-radial-progress"
-          cx="60"
-          cy="60"
-          r={radius}
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-        />
-      </svg>
-      <div className="patient-dashboard-radial-text">
-        <strong>{score === null || score === undefined ? "--" : normalized}</strong>
-        <span>Health Score</span>
-      </div>
     </div>
   );
 }

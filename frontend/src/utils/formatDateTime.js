@@ -1,3 +1,9 @@
+/**
+ * Format Date Time Utility
+ *
+ * Formats an ISO date string into a human-readable PH locale string.
+ * Returns a fallback string if the value is invalid or missing.
+ */
 export function formatDateTime(value, fallback = "N/A") {
   if (!value) return fallback;
 

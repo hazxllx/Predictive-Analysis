@@ -1,13 +1,20 @@
 import { cleanText } from "./normalizePatients";
+import { normalizeClinicalTag } from "./medicalTaxonomy";
 
 /**
  * Condition extraction utility for converting raw PMS visit/condition text
- * into clean, meaningful medical condition tags.
- * 
- * Removes generic phrases and extracts core diagnosis keywords.
+ * into clean, meaningful medical condition tags using the centralized taxonomy.
+ *
+ * This now uses the medical taxonomy to:
+ * - Reject junk/free-text terms
+ * - Normalize to canonical medical labels
+ * - Ensure only medically valid tags appear in UI
  */
 
-// Generic phrases to filter out (non-condition entries)
+/**
+ * Generic phrases to filter out (non-condition entries)
+ * These are administrative/visit types, not medical conditions.
+ */
 const GENERIC_PHRASES = [
   "refill medication",
   "labs",
@@ -29,32 +36,15 @@ const GENERIC_PHRASES = [
   "vaccination administered",
   "advice and monitoring",
   "refill",
-  "labs",
   "visit",
-];
-
-// Condition patterns with their normalized labels
-const CONDITION_MAPPINGS = [
-  { patterns: ["tension headache", "headache"], label: "Tension Headache" },
-  { patterns: ["chronic back pain"], label: "Chronic Back Pain" },
-  { patterns: ["back pain"], label: "Back Pain" },
-  { patterns: ["shortness of breath"], label: "Shortness of Breath" },
-  { patterns: ["asthma"], label: "Asthma" },
-  { patterns: ["seasonal allergy", "allergy"], label: "Allergy" },
-  { patterns: ["respiratory", "upper respiratory"], label: "Respiratory" },
-  { patterns: ["fever"], label: "Fever" },
-  { patterns: ["dermatitis"], label: "Dermatitis" },
-  { patterns: ["cough"], label: "Cough" },
-  { patterns: ["joint stiffness", "stiffness"], label: "Joint Stiffness" },
-  { patterns: ["abdominal pain"], label: "Abdominal Pain" },
-  { patterns: ["hypertension"], label: "Hypertension" },
-  { patterns: ["diabetes"], label: "Diabetes" },
-  { patterns: ["arthritis"], label: "Arthritis" },
-  { patterns: ["obesity"], label: "Obesity" },
+  "checkup",
+  "routine",
+  "check-up",
 ];
 
 /**
  * Normalizes a single condition/visit text into a clean condition tag
+ * Uses the centralized medical taxonomy for validation and normalization.
  * @param {string} text - Raw condition/visit text from PMS
  * @returns {object|null} - { label, priority } or null if text should be filtered
  */
@@ -67,40 +57,27 @@ export function normalizeConditionLabel(text) {
   // Filter out generic, non-condition phrases
   for (const phrase of GENERIC_PHRASES) {
     if (normalized.includes(phrase)) {
-      // Special handling: if the text contains a condition keyword, extract it
-      for (const mapping of CONDITION_MAPPINGS) {
-        for (const pattern of mapping.patterns) {
-          if (normalized.includes(pattern)) {
-            return { label: mapping.label, priority: true };
-          }
-        }
-      }
-      // No specific condition found, filter it out
       return null;
     }
   }
 
-  // Check for condition patterns
-  for (const mapping of CONDITION_MAPPINGS) {
-    for (const pattern of mapping.patterns) {
-      if (normalized.includes(pattern)) {
-        return { label: mapping.label, priority: true };
-      }
-    }
+  // Use centralized medical taxonomy to normalize
+  const canonical = normalizeClinicalTag(input);
+  if (canonical) {
+    return { label: canonical, priority: true };
   }
 
-  // Return the text as-is if it's not a generic phrase and not a known pattern
-  // Remove trailing period if present
-  const label = input.replace(/\.$/, "").trim();
-  return label ? { label, priority: false } : null;
+  // If not found in taxonomy, reject it (no arbitrary text allowed)
+  return null;
 }
 
 /**
  * Extracts clean condition tags from patient data
- * Deduplicates and limits results to max 3 tags
+ * Uses the medical taxonomy to ensure only valid medical tags are returned.
+ * Deduplicates and limits results to max 3 tags.
  * @param {object} patient - Normalized patient object
  * @param {number} maxTags - Maximum number of tags to return (default: 3)
- * @returns {array} - Array of condition tag strings
+ * @returns {array} - Array of condition tag strings (canonical labels only)
  */
 export function extractConditionTags(patient, maxTags = 3) {
   if (!patient || typeof patient !== "object") return [];
@@ -120,11 +97,10 @@ export function extractConditionTags(patient, maxTags = 3) {
     if (!normalized) continue;
 
     const label = normalized.label;
-    const lowerLabel = label.toLowerCase();
 
     // Skip duplicates
-    if (seen.has(lowerLabel)) continue;
-    seen.add(lowerLabel);
+    if (seen.has(label)) continue;
+    seen.add(label);
 
     tags.push(label);
 
@@ -136,7 +112,8 @@ export function extractConditionTags(patient, maxTags = 3) {
 }
 
 /**
- * Helper to check if a text is a valid condition (not a generic phrase)
+ * Helper to check if a text is a valid condition (not a generic phrase or junk)
+ * Uses the centralized medical taxonomy for validation.
  * @param {string} text - Text to check
  * @returns {boolean}
  */

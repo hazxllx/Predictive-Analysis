@@ -1,9 +1,7 @@
-# Environment files
+# Environment files (only root .env is used)
 .env
 .env.*
 !.env.example
-!backend/.env.example
-!frontend/.env.example
 
 # Dependencies
 node_modules/

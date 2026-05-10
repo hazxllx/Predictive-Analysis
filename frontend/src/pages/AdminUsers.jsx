@@ -1,16 +1,28 @@
-import React, { useEffect, useState } from "react";
+/**
+ * Admin Users Management Page
+ *
+ * Allows administrators to:
+ * - View, search, and filter all users
+ * - Create new users with validation
+ * - Edit existing user details
+ * - Delete users (with self-deletion protection)
+ */
+import React, { useCallback, useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
+import { useTheme } from "../context/ThemeContext";
 
+// Role display labels and badge colors
 const ROLE_LABELS = { patient: "Patient", admin: "Administrator" };
 const ROLE_COLORS = {
   patient: { bg: "#ede9fe", color: "#7c3aed", border: "#ddd6fe" },
   admin:   { bg: "#ffe4e6", color: "#be123c", border: "#fecdd3" },
 };
 
-const EMPTY_FORM = { name: "", email: "", password: "", role: "patient", patient_id: "" };
+const EMPTY_FORM = { name: "", username: "", email: "", password: "", role: "patient", patient_id: "" };
 
 export default function AdminUsers() {
+  const { isDark } = useTheme();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -23,19 +35,24 @@ export default function AdminUsers() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     try {
       setLoading(true);
       const { data } = await api.get("/admin/users");
-      setUsers(data);
+      const isDev = import.meta.env.DEV;
+      if (isDev) console.log("[AdminUsers] Raw response:", data);
+      const usersArray = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      if (isDev) console.log("[AdminUsers] Extracted users array:", usersArray.length);
+      setUsers(usersArray);
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error("[AdminUsers] Load error:", err.response?.status, err.message);
+      // Silently ignore; UI shows empty state
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadUsers(); }, []);
+  useEffect(() => { loadUsers(); }, [loadUsers]);
 
   const openCreate = () => {
     setEditUser(null);
@@ -48,6 +65,7 @@ export default function AdminUsers() {
     setEditUser(u);
     setForm({
       name: u.name,
+      username: u.username || "",
       email: u.email,
       password: "",
       role: u.role,
@@ -68,15 +86,24 @@ export default function AdminUsers() {
     e.preventDefault();
     setFormError("");
     if (!form.name.trim()) return setFormError("Name is required");
+    if (!editUser && !form.username.trim()) return setFormError("Username is required");
     if (!form.email.trim()) return setFormError("Email is required");
-    if (!editUser && !form.password) return setFormError("Password is required for new users");
-    if (!editUser && form.password.length < 6) return setFormError("Password must be at least 6 characters");
+    if (!editUser) {
+      const usernameRegex = /^[a-zA-Z0-9_]+$/;
+      if (!usernameRegex.test(form.username.trim())) {
+        return setFormError("Username may only contain letters, numbers, and underscores (no spaces)");
+      }
+      if (!form.password) return setFormError("Password is required for new users");
+      if (form.password.length < 6) return setFormError("Password must be at least 6 characters");
+    }
 
     setSaving(true);
     try {
       if (editUser) {
         await api.put(`/admin/users/${editUser.id || editUser._id}`, {
           name: form.name.trim(),
+          username: form.username.trim() || undefined,
+          email: form.email.trim(),
           role: form.role,
           patient_id: form.role === "patient" ? form.patient_id.trim() || null : null,
           password: form.password || undefined,
@@ -84,6 +111,7 @@ export default function AdminUsers() {
       } else {
         await api.post("/admin/users", {
           name: form.name.trim(),
+          username: form.username.trim(),
           email: form.email.trim(),
           password: form.password,
           role: form.role,
@@ -110,19 +138,22 @@ export default function AdminUsers() {
     }
   };
 
-  const filtered = users.filter((u) => {
+  const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
-    const displayName = (u.displayName || u.name || "").toLowerCase();
-    const email = (u.email || "").toLowerCase();
-    const matchSearch = !q || displayName.includes(q) || email.includes(q);
-    const matchRole = roleFilter === "All" || u.role === roleFilter;
-    return matchSearch && matchRole;
-  });
+    return users.filter((u) => {
+      const displayName = (u.displayName || u.name || "").toLowerCase();
+      const email = (u.email || "").toLowerCase();
+      const username = (u.username || "").toLowerCase();
+      const matchSearch = !q || displayName.includes(q) || email.includes(q) || username.includes(q);
+      const matchRole = roleFilter === "All" || u.role === roleFilter;
+      return matchSearch && matchRole;
+    });
+  }, [users, search, roleFilter]);
 
   return (
-    <div style={styles.layout}>
+    <div style={{ ...styles.layout, background: "var(--bg-body)" }}>
       <Sidebar />
-      <main style={styles.main}>
+      <main style={{ ...styles.main, background: "var(--bg-body)" }}>
         <header style={styles.headerRow}>
           <div>
             <h1 style={styles.title}>Users</h1>
@@ -156,12 +187,45 @@ export default function AdminUsers() {
         <div style={styles.tableWrap}>
           {loading ? (
             <div style={styles.loadingCell}>Loading users...</div>
+          ) : users.length === 0 ? (
+            <div style={styles.emptyCell}>
+              <div
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  margin: "0 auto 12px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <svg
+                  width="32"
+                  height="32"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0d9488"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+              </div>
+              <div style={{ fontSize: "14px", fontWeight: "600", marginBottom: "4px" }}>No users yet</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>Create your first user to get started</div>
+            </div>
           ) : (
             <div style={styles.tableScroll}>
               <table style={styles.table}>
                 <thead>
                   <tr>
                     <th style={styles.th}>Name</th>
+                    <th style={styles.th}>Username</th>
                     <th style={styles.th}>Email</th>
                     <th style={styles.th}>Role</th>
                     <th style={styles.th}>Patient ID</th>
@@ -177,8 +241,13 @@ export default function AdminUsers() {
                         <td style={styles.td}>
                           <div style={styles.nameCell}>
                             <div style={styles.avatar}>{(u.displayName || u.name || "U").charAt(0).toUpperCase()}</div>
-                            <span style={styles.nameText}>{u.displayName || u.name}</span>
+                            <span style={{ ...styles.nameText, color: isDark ? "#f1f5f9" : "#0f172a" }}>{u.displayName || u.name}</span>
                           </div>
+                        </td>
+                        <td style={styles.td}>
+                          <span style={{ fontFamily: "'Nunito', monospace", fontSize: "12px", color: isDark ? "#94a3b8" : "#475569", fontWeight: 500 }}>
+                            {u.username || <span style={{ color: isDark ? "#475569" : "#cbd5e1", fontStyle: "italic" }}>—</span>}
+                          </span>
                         </td>
                         <td style={styles.td}>{u.email}</td>
                         <td style={styles.td}>
@@ -210,7 +279,9 @@ export default function AdminUsers() {
                   })}
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={6} style={styles.emptyCell}>No users found.</td>
+                      <td colSpan={7} style={styles.emptyCell}>
+                        {search || roleFilter !== "All" ? "No users match your filters." : "No users found."}
+                      </td>
                     </tr>
                   )}
                 </tbody>
@@ -234,18 +305,29 @@ export default function AdminUsers() {
                     required
                   />
                 </Field>
-                {!editUser && (
-                  <Field label="Email Address">
-                    <input
-                      style={styles.input}
-                      type="email"
-                      value={form.email}
-                      onChange={(e) => setForm({ ...form, email: e.target.value })}
-                      placeholder="user@example.com"
-                      required
-                    />
-                  </Field>
-                )}
+
+                <Field label={editUser ? "Username (editable)" : "Username"}>
+                  <input
+                    style={styles.input}
+                    value={form.username}
+                    onChange={(e) => setForm({ ...form, username: e.target.value })}
+                    placeholder="e.g. juan_dela_cruz"
+                    required={!editUser}
+                    disabled={false}
+                  />
+                </Field>
+
+                <Field label="Email Address">
+                  <input
+                    style={styles.input}
+                    type="email"
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    placeholder="user@example.com"
+                    required
+                  />
+                </Field>
+
                 <Field label={editUser ? "New Password (leave blank to keep)" : "Password"}>
                   <input
                     style={styles.input}
@@ -322,15 +404,13 @@ const fieldStyles = {
 };
 
 const styles = {
-  layout: { display: "flex", height: "100vh", overflow: "hidden" },
+  layout: { display: "flex", minHeight: "100vh" },
   main: {
     flex: 1,
     display: "flex",
     flexDirection: "column",
     gap: "12px",
-    padding: "20px 24px",
-    overflow: "hidden",
-    background: "#f8fafc",
+    padding: "20px 28px",
     minWidth: 0,
   },
   headerRow: {
@@ -339,8 +419,8 @@ const styles = {
     justifyContent: "space-between",
     flexShrink: 0,
   },
-  title: { fontFamily: "Lora, serif", fontSize: "22px", color: "#1e293b", fontWeight: "600" },
-  subtitle: { fontSize: "12px", color: "#64748b", marginTop: "3px" },
+  title: { fontFamily: "Lora, serif", fontSize: "22px", color: "var(--text-main)", fontWeight: "600" },
+  subtitle: { fontSize: "12px", color: "var(--text-muted)", marginTop: "3px" },
   createBtn: {
     padding: "9px 18px",
     background: "linear-gradient(135deg, #0ea5e9, #0d9488)",
@@ -355,34 +435,37 @@ const styles = {
   filterBar: {
     display: "flex",
     gap: "10px",
-    background: "white",
-    border: "1px solid #e2e8f0",
+    background: "var(--bg-card)",
+    border: "1px solid var(--border-color)",
     borderRadius: "10px",
     padding: "10px",
     flexShrink: 0,
   },
   searchInput: {
     flex: 1,
-    border: "1px solid #e2e8f0",
+    border: "1px solid var(--border-color)",
     borderRadius: "8px",
     padding: "8px 12px",
     fontSize: "12px",
     outline: "none",
+    background: "var(--input-bg)",
+    color: "var(--text-main)",
   },
   select: {
-    border: "1px solid #e2e8f0",
+    border: "1px solid var(--border-color)",
     borderRadius: "8px",
     padding: "8px 10px",
     fontSize: "12px",
-    background: "white",
+    background: "var(--bg-card)",
+    color: "var(--text-main)",
     minWidth: "160px",
   },
 
   tableWrap: {
     flex: 1,
     minHeight: 0,
-    background: "white",
-    border: "1px solid #e2e8f0",
+    background: "var(--bg-card)",
+    border: "1px solid var(--border-color)",
     borderRadius: "12px",
     overflow: "hidden",
   },
@@ -391,19 +474,19 @@ const styles = {
   th: {
     textAlign: "left",
     fontSize: "11px",
-    color: "#475569",
+    color: "var(--text-muted)",
     padding: "10px 14px",
-    borderBottom: "1px solid #e2e8f0",
-    background: "#f8fafc",
+    borderBottom: "1px solid var(--border-color)",
+    background: "var(--bg-body)",
     position: "sticky",
     top: 0,
     zIndex: 1,
     fontWeight: "600",
   },
   tr: { transition: "background 0.13s" },
-  td: { fontSize: "12px", color: "#1e293b", padding: "11px 14px", borderBottom: "1px solid #f1f5f9" },
-  loadingCell: { padding: "20px", color: "#94a3b8", fontSize: "13px", textAlign: "center" },
-  emptyCell: { padding: "24px", color: "#94a3b8", fontSize: "13px", textAlign: "center" },
+  td: { fontSize: "12px", color: "var(--text-main)", padding: "11px 14px", borderBottom: "1px solid var(--border-color)" },
+  loadingCell: { padding: "20px", color: "var(--text-muted)", fontSize: "13px", textAlign: "center" },
+  emptyCell: { padding: "24px", color: "var(--text-muted)", fontSize: "13px", textAlign: "center" },
 
   nameCell: { display: "flex", alignItems: "center", gap: "10px" },
   avatar: {
@@ -414,7 +497,7 @@ const styles = {
     display: "flex", alignItems: "center", justifyContent: "center",
     fontSize: "12px", fontWeight: "700", flexShrink: 0,
   },
-  nameText: { fontWeight: "600", color: "#0f172a" },
+  nameText: { fontWeight: "600" },
   rolePill: {
     display: "inline-block",
     padding: "3px 9px",
@@ -457,7 +540,7 @@ const styles = {
     padding: "24px",
   },
   modal: {
-    background: "white",
+    background: "var(--bg-card)",
     borderRadius: "20px",
     padding: "32px",
     width: "100%",
@@ -467,18 +550,19 @@ const styles = {
   modalTitle: {
     fontFamily: "Lora, serif",
     fontSize: "20px",
-    color: "#1e293b",
+    color: "var(--text-main)",
     fontWeight: "600",
     marginBottom: "20px",
   },
   form: { display: "flex", flexDirection: "column", gap: "14px" },
   input: {
-    border: "1.5px solid #e2e8f0",
+    border: "1.5px solid var(--border-color)",
     borderRadius: "10px",
     padding: "10px 12px",
     fontSize: "13px",
     outline: "none",
-    background: "#fafafa",
+    background: "var(--input-bg)",
+    color: "var(--text-main)",
     width: "100%",
     boxSizing: "border-box",
   },

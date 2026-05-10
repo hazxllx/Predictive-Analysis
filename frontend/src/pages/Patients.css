@@ -1,15 +1,13 @@
 .patient-registry-page {
   display: flex;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
   background: #eef6f7;
 }
 
 .patient-registry-page__main {
   flex: 1;
   min-width: 0;
-  padding: 22px 24px 28px;
-  overflow-y: auto;
+  padding: 22px 28px 28px;
 }
 
 .patient-registry-page__header {

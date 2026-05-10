@@ -1,3 +1,8 @@
+/**
+ * Confidence Badge Component
+ *
+ * Displays a small badge showing the confidence level of an assessment.
+ */
 import React from "react";
 
 const config = {

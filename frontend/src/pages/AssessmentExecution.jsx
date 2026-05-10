@@ -1,3 +1,9 @@
+/**
+ * Assessment Execution Page
+ *
+ * Runs a predictive risk assessment for a specific patient.
+ * Shows patient data, processing animation, and redirects to the detail view.
+ */
 import React, { useEffect, useMemo, useState } from "react";
 import { Activity, Cigarette, Salad, Wine } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -6,6 +12,7 @@ import api from "../api/axios";
 import { normalizePatientResponse } from "../utils/normalizePatients";
 import { invalidateCachedQuery, setCachedQuery } from "../api/queryCache";
 
+// Icons for lifestyle factors displayed during assessment
 const LIFESTYLE_ICON_MAP = {
   smoking: Cigarette,
   alcohol: Wine,
@@ -251,12 +258,11 @@ function wait(ms) {
 }
 
 const styles = {
-  layout: { display: "flex", height: "100vh", overflow: "hidden", background: "#f7fbfd" },
+  layout: { display: "flex", minHeight: "100vh", background: "#f7fbfd" },
   main: {
     flex: 1,
     minWidth: 0,
-    overflowY: "auto",
-    padding: "18px 22px",
+    padding: "18px 28px",
     display: "flex",
     flexDirection: "column",
     gap: "12px",
@@ -264,7 +270,6 @@ const styles = {
   mainCentered: {
     flex: 1,
     minWidth: 0,
-    overflowY: "auto",
     display: "flex",
     flexDirection: "column",
     justifyContent: "center",

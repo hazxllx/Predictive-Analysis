@@ -1,3 +1,12 @@
+/**
+ * Patients Registry Page
+ *
+ * Admin-facing patient list with:
+ * - Search and filtering
+ * - Risk level badges
+ * - Condition tags
+ * - Quick navigation to patient details and assessments
+ */
 import React, { useEffect, useMemo, useState } from "react";
 import { Activity, Cigarette, Search, Salad, Wine } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -9,9 +18,14 @@ import { formatDateTime } from "../utils/formatDateTime";
 import { fetchWithCache } from "../api/cachedFetch";
 import { setCachedQuery } from "../api/queryCache";
 import { normalizePatients } from "../utils/normalizePatients";
-import { normalizeAssessment } from "../utils/normalizeAssessment";
+import {
+  normalizeAssessment,
+  getAssessmentRiskLevel,
+  getAssessmentRiskScore,
+} from "../utils/normalizeAssessment";
 import { extractConditionTags } from "../utils/conditionExtraction";
 
+// CSS class mapping for risk level badges
 const RISK_CLASS_MAP = {
   Critical: "patient-registry__badge--critical",
   High: "patient-registry__badge--high",
@@ -78,8 +92,8 @@ export default function Patients() {
             return acc;
           }, {})
         );
-      } catch (error) {
-        console.error("Patients load error:", error);
+      } catch {
+        // Error is silent; UI shows empty state
       } finally {
         setLoading(false);
       }
@@ -198,13 +212,16 @@ export default function Patients() {
   );
 }
 
-function PatientRegistryCard({ patient, assessment, onOpen }) {
+const PatientRegistryCard = React.memo(function PatientRegistryCard({ patient, assessment, onOpen }) {
   const conditions = getConditions(patient);
   const lifestyleIndicators = getLifestyleIndicators(patient);
   const initials = getInitials(patient.name);
   const hasAssessment = Boolean(assessment);
-  const riskLevel = assessment?.risk_level || "Not assessed";
-  const riskScore = assessment?.risk_score;
+
+  const normalized = hasAssessment ? normalizeAssessment(assessment) : null;
+  const riskLevel = getAssessmentRiskLevel(normalized) || "Not assessed";
+  const riskScore = getAssessmentRiskScore(normalized);
+
   const actionLabel = hasAssessment ? "View Result ->" : "Assess ->";
 
   return (
@@ -277,12 +294,8 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
         {hasAssessment ? (
           <span className={`patient-registry__badge ${RISK_CLASS_MAP[riskLevel] || ""}`}>
             <span>{riskLevel}</span>
-            {riskScore !== null && riskScore !== undefined && (
-              <>
-                <span aria-hidden="true">&nbsp;&middot;&nbsp;</span>
-                <span>{riskScore}/100</span>
-              </>
-            )}
+            <span aria-hidden="true">&nbsp;&middot;&nbsp;</span>
+            <span>{riskScore === null || riskScore === undefined ? "--" : `${riskScore}/100`}</span>
           </span>
         ) : (
           <span className="patient-registry-card__pending">Not assessed</span>
@@ -292,7 +305,7 @@ function PatientRegistryCard({ patient, assessment, onOpen }) {
       </div>
     </button>
   );
-}
+});
 
 function getInitials(name = "") {
   return (

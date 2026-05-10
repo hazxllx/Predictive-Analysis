@@ -1,18 +1,44 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Activity, ChevronDown, ChevronRight, Cigarette, Wine, Utensils, Zap } from "lucide-react";
+/**
+ * Patient Detail Page
+ *
+ * Displays a comprehensive patient profile with:
+ * - Risk score and breakdown
+ * - Assessment history
+ * - Vitals and lifestyle summary
+ * - Ability to run a new assessment
+ */
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  Cigarette,
+  HeartPulse,
+  Stethoscope,
+  Utensils,
+  Wine,
+  Zap,
+} from "lucide-react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import Sidebar from "../components/Sidebar";
 import RiskBadge from "../components/RiskBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
 import ResultTabs from "../components/ResultTabs";
+import RadialHealthScore from "../components/RadialHealthScore";
 import api from "../api/axios";
 import { formatDateTime } from "../utils/formatDateTime";
 import { fetchWithCache } from "../api/cachedFetch";
 import { invalidateCachedQuery, setCachedQuery } from "../api/queryCache";
 import { normalizePatient, normalizePatientResponse, cleanText } from "../utils/normalizePatients";
-import { normalizeAssessment } from "../utils/normalizeAssessment";
+import {
+  getAssessmentRiskLevel,
+  getAssessmentRiskScore,
+  normalizeAssessment,
+} from "../utils/normalizeAssessment";
 import { extractConditionTags } from "../utils/conditionExtraction";
+import { getPatientFacingRiskLabel } from "../utils/riskTone";
 
 const PANEL_KEYS = {
   patientInfo: "patientInfo",
@@ -70,7 +96,6 @@ export default function PatientDetail() {
         setPatient(normalizedPatient);
         setCachedQuery(["patient", id], normalizedPatient);
       } catch (err) {
-        console.error("PATIENT LOAD ERROR:", err);
         setError(err.response?.data?.message || err.message || "Failed to load patient");
       } finally {
         setLoading(false);
@@ -94,8 +119,7 @@ export default function PatientDetail() {
           setAssessment(null);
           setHistory([]);
         }
-      } catch (err) {
-        console.warn("Risk not found or API failed:", err.message);
+      } catch {
         setAssessment(null);
         setHistory([]);
       }
@@ -104,7 +128,7 @@ export default function PatientDetail() {
     load();
   }, [id]);
 
-  const runAssessment = async () => {
+  const runAssessment = useCallback(async () => {
     setAssessing(true);
     setError("");
 
@@ -127,7 +151,7 @@ export default function PatientDetail() {
     } finally {
       setAssessing(false);
     }
-  };
+  }, [id]);
 
   const initials = useMemo(() => {
     const name = patient?.name || "";
@@ -163,22 +187,6 @@ export default function PatientDetail() {
     [patient]
   );
 
-  const lifestyleRows = useMemo(
-    () =>
-      [
-        patient?.lifestyle?.smoking !== undefined
-          ? ["Smoking", patient.lifestyle.smoking ? "Yes" : "No"]
-          : null,
-        patient?.lifestyle?.alcohol !== undefined
-          ? ["Alcohol", patient.lifestyle.alcohol ? "Yes" : "No"]
-          : null,
-        patient?.lifestyle?.diet ? ["Diet", patient.lifestyle.diet] : null,
-        patient?.lifestyle?.physical_activity
-          ? ["Physical Activity", patient.lifestyle.physical_activity]
-          : null,
-      ].filter(Boolean),
-    [patient]
-  );
 
   const lifestyleData = useMemo(() => {
     if (!patient?.lifestyle) return null;
@@ -197,9 +205,14 @@ export default function PatientDetail() {
   const familyHistory = useMemo(() => compactRecord(patient?.family_history), [patient?.family_history]);
   const vitals = useMemo(() => compactRecord(patient?.vitals), [patient?.vitals]);
 
-  const score = Number(assessment?.risk_score || 0);
-  const gaugeColor = getScoreColor(score);
-  const gaugeTrack = `conic-gradient(${gaugeColor} ${Math.min(score, 100) * 3.6}deg, #eef2f7 0deg)`;
+  const riskScore = getAssessmentRiskScore(assessment);
+  const riskLevel = getAssessmentRiskLevel(assessment) || "Low";
+  const patientRiskLabel = getPatientFacingRiskLabel(riskLevel);
+  const topRiskFactor = useMemo(() => {
+    const breakdown = Array.isArray(assessment?.breakdown) ? assessment.breakdown : [];
+    const top = [...breakdown].sort((a, b) => Number(b?.points || 0) - Number(a?.points || 0))[0];
+    return top?.label || "Recent health markers";
+  }, [assessment?.breakdown]);
 
   const togglePanel = (key) => {
     setExpandedPanels((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -273,65 +286,75 @@ export default function PatientDetail() {
 
         {error && <div style={styles.errorBar}>{error}</div>}
 
+        {assessment?.disclaimer && (
+          <div style={styles.disclaimerBox}>
+            <p style={styles.disclaimerText}>{assessment.disclaimer}</p>
+          </div>
+        )}
+
         {hasAssessment && (
-          <div style={styles.content}>
-            {assessment?.disclaimer && (
-              <div style={styles.disclaimerBox}>
-                <p style={styles.disclaimerText}>{assessment.disclaimer}</p>
+          <section style={styles.scoreCard}>
+            <div style={styles.scoreLeft}>
+              <div style={styles.scoreRadialWrap}>
+                <RadialHealthScore score={riskScore} riskLevel={riskLevel} size={90} strokeWidth={7} />
               </div>
-            )}
+              <span style={styles.scoreRadialLabel}>Risk Score {riskScore ?? "--"}/100</span>
+            </div>
 
-            <section style={styles.summaryCard}>
-              <div style={styles.gaugeBox}>
-                <div style={{ ...styles.gauge, background: gaugeTrack }}>
-                  <div style={styles.gaugeInner}>
-                    <span style={{ ...styles.gaugeValue, color: gaugeColor }}>{score}</span>
-                    <span style={styles.gaugeTotal}>/100</span>
-                  </div>
-                </div>
-                <p style={styles.gaugeLabel}>Risk Score</p>
+            <div style={styles.scoreRight}>
+              <div style={styles.scoreBadges}>
+                <RiskBadge level={riskLevel} large />
+                {assessment?.confidence && <ConfidenceBadge level={assessment.confidence} />}
               </div>
 
-              <div style={styles.riskOverviewPanel}>
-                <div style={styles.overviewBadges}>
-                  <RiskBadge level={assessment.risk_level} large />
-                  {assessment?.confidence && <ConfidenceBadge level={assessment.confidence} />}
+              <div style={styles.scoreMeta}>
+                <div style={styles.scoreMetaItem}>
+                  <span style={styles.scoreMetaLabel}>Risk Status</span>
+                  <span style={styles.scoreMetaValue}>{patientRiskLabel}</span>
                 </div>
-
-                <div style={styles.overviewSection}>
-                  <h4 style={styles.overviewLabel}>Assessment Details</h4>
-                  {assessment?.createdAt && (
-                    <p style={styles.overviewItem}>
-                      <span style={styles.overviewItemLabel}>Last Assessed:</span>
-                      <span>{new Date(assessment.createdAt).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
-                    </p>
-                  )}
+                <div style={styles.scoreMetaItem}>
+                  <span style={styles.scoreMetaLabel}>Top Risk Factor</span>
+                  <span style={styles.scoreMetaValue}>{topRiskFactor}</span>
                 </div>
-
-                {history.length > 1 && (
-                  <div style={styles.overviewSection}>
-                    <h4 style={styles.overviewLabel}>Assessment History</h4>
-                    <div style={styles.historyInline}>
-                      {history.slice(0, 3).map((entry) => (
-                        <div key={entry._id || `${entry.createdAt}-${entry.risk_score}`} style={styles.historyItem}>
-                          <span style={styles.historyLevel}>{entry.risk_level}</span>
-                          <span style={styles.historyScore}>{entry.risk_score}/100</span>
-                          <span style={styles.historyDate}>
-                            {entry.createdAt
-                              ? new Date(entry.createdAt).toLocaleDateString("en-PH", {
-                                  month: "short",
-                                  day: "numeric",
-                                })
-                              : ""}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                {assessment?.createdAt && (
+                  <div style={styles.scoreMetaItem}>
+                    <span style={styles.scoreMetaLabel}>Last Assessed</span>
+                    <span style={styles.scoreMetaValue}>
+                      {new Date(assessment.createdAt).toLocaleString("en-PH", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
                   </div>
                 )}
               </div>
-            </section>
-          </div>
+
+              {history.length > 1 && (
+                <div style={styles.scoreHistory}>
+                  <h4 style={styles.scoreHistoryTitle}>Recent History</h4>
+                  <div style={styles.historyInline}>
+                    {history.slice(0, 3).map((entry) => (
+                      <div key={entry._id || `${entry.createdAt}-${entry.risk_score}`} style={styles.historyItem}>
+                        <span style={styles.historyLevel}>{entry.risk_level}</span>
+                        <span style={styles.historyScore}>{getAssessmentRiskScore(entry) ?? "--"}/100</span>
+                        <span style={styles.historyDate}>
+                          {entry.createdAt
+                            ? new Date(entry.createdAt).toLocaleDateString("en-PH", {
+                                month: "short",
+                                day: "numeric",
+                              })
+                            : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
         )}
 
         <div style={styles.mainGrid}>
@@ -425,7 +448,9 @@ export default function PatientDetail() {
               <>
                 <div style={styles.recommendationPreview}>
                   <div style={styles.previewHeader}>
-                    <h2 style={styles.previewTitle}>Key Recommendations</h2>
+                    <h2 style={styles.previewTitle}>
+                      <Stethoscope size={15} /> Immediate Recommendations
+                    </h2>
                     {hasMoreRecommendations && (
                       <button
                         style={styles.viewAllBtn}
@@ -443,6 +468,20 @@ export default function PatientDetail() {
                       </li>
                     ))}
                   </ul>
+                </div>
+
+                <div style={styles.secondaryInsightsCard}>
+                  <p style={styles.secondaryInsightsTitle}>
+                    <AlertCircle size={14} /> Predictive Interpretation
+                  </p>
+                  <p style={styles.secondaryInsightsBody}>
+                    {assessment?.structured_insights?.progress_interpretation ||
+                      "Risk interpretation is based on deterministic scoring from lifestyle, vitals, and medical history signals."}
+                  </p>
+                  <p style={styles.secondaryInsightsBody}>
+                    {assessment?.structured_insights?.predictive_outlook ||
+                      "Continue preventive actions and routine monitoring to improve long-term outcomes."}
+                  </p>
                 </div>
 
                 <ResultTabs data={assessment} />
@@ -555,12 +594,6 @@ function toneStyle(tone) {
   return { background: "#f8fafc", border: "1px solid #e2e8f0", color: "#334155" };
 }
 
-function getScoreColor(score) {
-  if (score >= 70) return "#dc2626";
-  if (score >= 45) return "#d97706";
-  if (score >= 20) return "#ca8a04";
-  return "#16a34a";
-}
 
 function formatKey(key) {
   return String(key || "")
@@ -569,12 +602,11 @@ function formatKey(key) {
 }
 
 const styles = {
-  layout: { display: "flex", height: "100vh", overflow: "hidden", background: "#f7fbfd" },
+  layout: { display: "flex", minHeight: "100vh", background: "#f7fbfd" },
   main: {
     flex: 1,
     minWidth: 0,
-    overflowY: "auto",
-    padding: "18px 22px",
+    padding: "18px 28px",
     display: "flex",
     flexDirection: "column",
     gap: "12px",
@@ -642,44 +674,88 @@ const styles = {
     fontSize: "12px",
     padding: "8px 12px",
   },
-  content: { display: "flex", flexDirection: "column", gap: "12px", minHeight: 0 },
-  summaryCard: {
+  scoreCard: {
     background: "#ffffff",
     border: "1px solid #dbe7ee",
     borderRadius: "14px",
-    padding: "14px",
+    padding: "16px",
     display: "grid",
-    gridTemplateColumns: "180px 1fr",
+    gridTemplateColumns: "140px 1fr",
     gap: "16px",
     alignItems: "center",
   },
-  gaugeBox: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" },
-  gauge: {
-    width: "96px",
-    height: "96px",
-    borderRadius: "50%",
-    padding: "6px",
+  scoreLeft: {
     display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  gaugeInner: {
-    width: "100%",
-    height: "100%",
-    borderRadius: "50%",
-    background: "#ffffff",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
     flexDirection: "column",
+    alignItems: "center",
+    gap: "6px",
   },
-  gaugeValue: { fontSize: "24px", lineHeight: 1, fontWeight: 800 },
-  gaugeTotal: { fontSize: "10px", color: "#6b8799", fontWeight: 700 },
-  gaugeLabel: { color: "#5f7685", fontSize: "12px", fontWeight: 700 },
-  summaryMeta: { display: "flex", flexDirection: "column", gap: "10px" },
-  summaryBadges: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" },
-  timestamp: { color: "#3f5666", fontSize: "12px" },
-  timestampLabel: { color: "#6b8799", fontWeight: 700 },
+  scoreRadialWrap: {
+    width: "110px",
+    height: "110px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  scoreRadialLabel: {
+    color: "#5f7685",
+    fontSize: "11px",
+    fontWeight: 700,
+    textAlign: "center",
+  },
+  scoreRight: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    minWidth: 0,
+  },
+  scoreBadges: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  scoreMeta: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+    gap: "10px",
+  },
+  scoreMetaItem: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "3px",
+    background: "#f8fcfe",
+    border: "1px solid #e5f0f5",
+    borderRadius: "10px",
+    padding: "10px 12px",
+  },
+  scoreMetaLabel: {
+    fontSize: "10px",
+    fontWeight: 700,
+    color: "#6b8799",
+    textTransform: "uppercase",
+    letterSpacing: "0.4px",
+  },
+  scoreMetaValue: {
+    fontSize: "14px",
+    fontWeight: 800,
+    color: "#123447",
+    lineHeight: 1.3,
+  },
+  scoreHistory: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+  },
+  scoreHistoryTitle: {
+    margin: 0,
+    fontSize: "11px",
+    fontWeight: 700,
+    color: "#6b8799",
+    textTransform: "uppercase",
+    letterSpacing: "0.4px",
+  },
   historyBlock: {
     marginTop: "10px",
     display: "flex",
@@ -710,12 +786,13 @@ const styles = {
   historyDate: { color: "#6b8799" },
   mainGrid: {
     display: "grid",
-    gridTemplateColumns: "minmax(280px, 380px) 1fr",
-    gap: "12px",
+    gridTemplateColumns: "minmax(280px, 360px) 1fr",
+    gap: "14px",
     minHeight: 0,
+    marginTop: "6px",
   },
-  leftColumn: { display: "flex", flexDirection: "column", gap: "10px" },
-  rightColumn: { display: "flex", flexDirection: "column", gap: "10px", minWidth: 0 },
+  leftColumn: { display: "flex", flexDirection: "column", gap: "12px" },
+  rightColumn: { display: "flex", flexDirection: "column", gap: "12px", minWidth: 0 },
   collapseCard: {
     background: "#ffffff",
     border: "1px solid #dbe7ee",
@@ -756,10 +833,13 @@ const styles = {
     background: "#ffffff",
     border: "1px solid #dbe7ee",
     borderRadius: "12px",
-    padding: "12px",
+    padding: "14px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
   },
   previewHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" },
-  previewTitle: { margin: 0, fontSize: "15px", color: "#17384c" },
+  previewTitle: { margin: 0, fontSize: "15px", color: "#17384c", display: "flex", alignItems: "center", gap: "8px" },
   viewAllBtn: {
     border: "none",
     background: "transparent",
@@ -768,8 +848,8 @@ const styles = {
     fontWeight: 700,
     padding: 0,
   },
-  previewList: { margin: "8px 0 0 16px", display: "flex", flexDirection: "column", gap: "6px" },
-  previewItem: { color: "#2d4a5b", fontSize: "12px", lineHeight: 1.5 },
+  previewList: { margin: "4px 0 0 18px", display: "flex", flexDirection: "column", gap: "6px", padding: 0 },
+  previewItem: { color: "#2d4a5b", fontSize: "13px", lineHeight: 1.55 },
   historyTagGrid: {
     display: "flex",
     flexWrap: "wrap",
@@ -778,12 +858,12 @@ const styles = {
   historyTag: {
     display: "inline-flex",
     alignItems: "center",
-    minHeight: "34px",
-    padding: "8px 14px",
+    minHeight: "30px",
+    padding: "6px 12px",
     borderRadius: "999px",
     background: "#eaf6fb",
     color: "#123f5a",
-    fontSize: "13px",
+    fontSize: "12px",
     fontWeight: 700,
     lineHeight: 1.2,
     boxShadow: "inset 0 0 0 1px #d8eaf3",
@@ -901,8 +981,8 @@ const styles = {
     transition: "opacity 180ms ease",
   },
   disclaimerBox: {
-    marginBottom: "20px",
-    padding: "12px 14px",
+    marginBottom: "12px",
+    padding: "10px 12px",
     background: "#fef3c7",
     border: "1px solid #fde68a",
     borderRadius: "10px",
@@ -914,41 +994,29 @@ const styles = {
     fontWeight: 500,
     lineHeight: 1.5,
   },
-  riskOverviewPanel: {
+  secondaryInsightsCard: {
+    background: "#ffffff",
+    border: "1px solid #dbe7ee",
+    borderRadius: "12px",
+    padding: "14px",
     display: "flex",
     flexDirection: "column",
-    gap: "12px",
+    gap: "8px",
   },
-  overviewBadges: {
+  secondaryInsightsTitle: {
+    margin: 0,
+    fontSize: "13px",
+    fontWeight: 700,
+    color: "#17384c",
     display: "flex",
     alignItems: "center",
     gap: "8px",
-    flexWrap: "wrap",
   },
-  overviewSection: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-  },
-  overviewLabel: {
+  secondaryInsightsBody: {
     margin: 0,
-    fontSize: "11px",
-    fontWeight: 700,
-    color: "#6b8799",
-    textTransform: "uppercase",
-    letterSpacing: "0.4px",
-  },
-  overviewItem: {
-    margin: 0,
-    fontSize: "12px",
-    color: "#334155",
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "8px",
-  },
-  overviewItemLabel: {
-    fontWeight: 700,
-    color: "#6b8799",
+    fontSize: "13px",
+    color: "#526f82",
+    lineHeight: 1.55,
   },
   lifestyleCard: {
     background: "#ffffff",

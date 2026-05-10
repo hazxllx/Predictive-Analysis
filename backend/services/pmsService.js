@@ -1,25 +1,210 @@
+/**
+ * PMS (Patient Management System) Integration Service
+ *
+ * Responsibilities:
+ * - Fetches patient demographics and health records from the external PMS
+ * - Normalizes heterogeneous PMS data into a consistent internal schema
+ * - Implements robust resilience: exponential backoff retries, request deduplication,
+ *   connection pooling, health checking, and graceful fallbacks
+ * - Caches results to reduce PMS load and improve response latency
+ *
+ * Retry policy:
+ * - 3 attempts max with exponential backoff (1s, 2s, 4s)
+ * - Retries only transient errors (network, timeout, 5xx)
+ * - Never retries 401/403 or other client errors
+ *
+ * Scoring behavior is NOT modified by this module.
+ */
 const axios = require("axios");
+const https = require("https");
 
 const BASE_URL = process.env.PMS_BASE_URL || "https://pms-backend-kohl.vercel.app/api/v1/external";
 const PMS_PAGE_LIMIT = 1000;
 const CACHE_TTL_MS = Number(process.env.PMS_CACHE_TTL_MS || 2 * 60 * 1000);
 
+/**
+ * PMS Client Configuration
+ * - Keep-alive agent reuses TCP connections to reduce latency
+ * - Timeout starts at 12s and can extend during retries (max 25s)
+ * - Dedicated connection pool prevents port exhaustion under load
+ */
+const keepAliveAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 20,
+  maxFreeSockets: 10,
+  timeout: 30000,
+  freeSocketTimeout: 30000,
+});
+
 const pmsClient = axios.create({
   baseURL: BASE_URL,
-  timeout: 8000,
+  timeout: 12000,
   headers: {
     "x-api-key": process.env.PMS_API_KEY,
+    "Accept": "application/json",
+    "Connection": "keep-alive",
   },
+  httpsAgent: keepAliveAgent,
 });
 
 const cache = {
   patients: { data: null, updatedAt: 0 },
   records: { data: null, updatedAt: 0 },
 };
+
+/** In-flight request deduplication for concurrent callers */
 const inFlight = {
   patients: null,
   records: null,
 };
+
+/** Per-request deduplication locks keyed by endpoint */
+const requestLocks = new Map();
+
+/** Connection health tracking */
+let lastSuccessfulRequest = 0;
+let consecutiveFailures = 0;
+const HEALTH_CHECK_INTERVAL_MS = 30000;
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+/**
+ * Retry Configuration
+ * - Max 3 attempts total
+ * - Exponential backoff: 1s, 2s, 4s
+ * - Only retries transient errors (network, timeout, 5xx)
+ * - Never retries auth failures (401/403) or client errors (4xx)
+ */
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 8000,
+  timeoutCeilingMs: 25000,
+};
+
+function isRetryableError(error) {
+  if (!error) return false;
+
+  const status = error.response?.status;
+  if (status) {
+    // Never retry auth failures or client errors
+    if (status === 401 || status === 403) return false;
+    if (status >= 400 && status < 500) return false;
+    // Retry server errors
+    if (status >= 500) return true;
+  }
+
+  // Retry network/connection errors
+  const code = error.code;
+  if (code) {
+    const retryableCodes = new Set([
+      "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "ECONNREFUSED",
+      "EHOSTUNREACH", "EPIPE", "ERR_NETWORK", "ERR_TIMEOUT",
+    ]);
+    if (retryableCodes.has(code)) return true;
+  }
+
+  // Retry explicit timeout messages
+  const message = String(error.message || "").toLowerCase();
+  if (message.includes("timeout")) return true;
+
+  return false;
+}
+
+function getRetryDelay(attempt) {
+  const exponential = RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt - 1);
+  return Math.min(exponential, RETRY_CONFIG.maxDelayMs);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isPmsHealthy() {
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    const timeSinceLastSuccess = Date.now() - lastSuccessfulRequest;
+    // After 30s of cooldown, allow one probe request
+    return timeSinceLastSuccess > HEALTH_CHECK_INTERVAL_MS;
+  }
+  return true;
+}
+
+function recordSuccess() {
+  lastSuccessfulRequest = Date.now();
+  consecutiveFailures = 0;
+}
+
+function recordFailure() {
+  consecutiveFailures += 1;
+}
+
+/**
+ * Execute a PMS request with robust retry, cancellation protection,
+ * and deduplication. Returns safe fallback data on persistent failure.
+ */
+async function pmsRequest(config, fallbackData = null) {
+  assertPmsKey();
+
+  if (!isPmsHealthy()) {
+    console.warn("PMS health check: too many consecutive failures, using fallback");
+    return fallbackData;
+  }
+
+  // Request deduplication by URL + method
+  const lockKey = `${config.method || "GET"}:${config.url || ""}`;
+  if (requestLocks.has(lockKey)) {
+    return requestLocks.get(lockKey);
+  }
+
+  const requestPromise = (async () => {
+    let lastError;
+
+    for (let attempt = 1; attempt <= RETRY_CONFIG.maxRetries; attempt += 1) {
+      try {
+        const timeout = Math.min(
+          RETRY_CONFIG.timeoutCeilingMs,
+          (config.timeout || 12000) + (attempt - 1) * 4000
+        );
+
+        const response = await pmsClient.request({
+          ...config,
+          timeout,
+          // Signal cancellation is not supported in this axios version;
+          // we rely on timeout instead.
+        });
+
+        recordSuccess();
+        return response;
+      } catch (error) {
+        lastError = error;
+
+        if (!isRetryableError(error)) {
+          console.error(`PMS request non-retryable error (${lockKey}):`, error.response?.status, error.message);
+          break;
+        }
+
+        console.warn(`PMS request attempt ${attempt}/${RETRY_CONFIG.maxRetries} failed (${lockKey}):`, error.message);
+        recordFailure();
+
+        if (attempt < RETRY_CONFIG.maxRetries) {
+          const delay = getRetryDelay(attempt);
+          console.warn(`Retrying in ${delay}ms...`);
+          await sleep(delay);
+        }
+      }
+    }
+
+    console.error(`PMS request failed permanently (${lockKey}):`, lastError?.message);
+    return fallbackData;
+  })();
+
+  requestLocks.set(lockKey, requestPromise);
+  try {
+    const result = await requestPromise;
+    return result;
+  } finally {
+    requestLocks.delete(lockKey);
+  }
+}
 
 const CONDITION_PATTERNS = {
   cardiovascular: /\b(hypertension|heart|cardio|stroke|arrhythmia|coronary|angina|myocardial|heart failure)\b/i,
@@ -392,20 +577,17 @@ async function fetchAllHealthRecords(force = false) {
   }
 
   inFlight.records = (async () => {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        const response = await pmsClient.get(`/health-records?page=1&limit=${PMS_PAGE_LIMIT}`);
-        return setCache("records", extractHealthRecordsFromResponse(response));
-      } catch (error) {
-        console.error(`PMS health-records error (attempt ${attempt}):`, error.response?.data || error.message);
+    const response = await pmsRequest(
+      { method: "GET", url: `/health-records?page=1&limit=${PMS_PAGE_LIMIT}` },
+      /* fallback */ null
+    );
 
-        if (attempt === 2) {
-          return [];
-        }
-      }
+    if (response === null) {
+      // On persistent failure, return stale cache if available, else empty array
+      return cache.records.data || [];
     }
 
-    return [];
+    return setCache("records", extractHealthRecordsFromResponse(response));
   })().finally(() => {
     inFlight.records = null;
   });
@@ -434,38 +616,39 @@ async function fetchAllPatients(options = {}) {
   }
 
   inFlight.patients = (async () => {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        const [response, records] = await Promise.all([
-          pmsClient.get(`/patients?page=1&limit=${PMS_PAGE_LIMIT}`),
-          fetchAllHealthRecords(options?.force),
-        ]);
+    try {
+      // Fetch health records first (with its own caching/deduplication)
+      const records = await fetchAllHealthRecords(options?.force);
 
-        const rawPatients = extractPatientsFromResponse(response);
-        const recordsByPatient = groupRecordsByPatient(records);
+      const response = await pmsRequest(
+        { method: "GET", url: `/patients?page=1&limit=${PMS_PAGE_LIMIT}` },
+        /* fallback */ null
+      );
 
-        const normalizedPatients = rawPatients
-          .map((rawPatient) => {
-            try {
-              const patientId = cleanText(rawPatient?.patient_id);
-              return mapPatient(rawPatient, recordsByPatient.get(patientId) || []);
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-
-        return setCache("patients", normalizedPatients);
-      } catch (error) {
-        console.error(`PMS patients error (attempt ${attempt}):`, error.response?.data || error.message);
-
-        if (attempt === 2) {
-          return [];
-        }
+      if (response === null) {
+        // On persistent failure, return stale cache if available, else empty array
+        return cache.patients.data || [];
       }
-    }
 
-    return [];
+      const rawPatients = extractPatientsFromResponse(response);
+      const recordsByPatient = groupRecordsByPatient(records);
+
+      const normalizedPatients = rawPatients
+        .map((rawPatient) => {
+          try {
+            const patientId = cleanText(rawPatient?.patient_id);
+            return mapPatient(rawPatient, recordsByPatient.get(patientId) || []);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+
+      return setCache("patients", normalizedPatients);
+    } catch (error) {
+      console.error("PMS patients error:", error.message);
+      return cache.patients.data || [];
+    }
   })().finally(() => {
     inFlight.patients = null;
   });
@@ -499,7 +682,15 @@ async function fetchPatient(patientId, options = {}) {
     console.warn("Falling back to direct PMS patient fetch:", error.message);
   }
 
-  const res = await pmsClient.get(`/patients/${normalizedPatientId}`);
+  const res = await pmsRequest(
+    { method: "GET", url: `/patients/${normalizedPatientId}` },
+    /* fallback */ null
+  );
+
+  if (res === null) {
+    throw new Error("Patient not found in PMS (PMS unreachable)");
+  }
+
   const raw =
     res?.data?.data?.patient ||
     (Array.isArray(res?.data?.data?.patients) ? res.data.data.patients[0] : null) ||

@@ -1,6 +1,12 @@
+/**
+ * Cached Fetch Utility
+ *
+ * Wraps any fetcher function with an in-memory + sessionStorage cache.
+ * Returns cached data if it exists and is not stale; otherwise fetches fresh data.
+ */
 import { getCachedQuery, setCachedQuery } from "./queryCache";
 
-const DEFAULT_STALE_TIME = 5 * 60 * 1000;
+const DEFAULT_STALE_TIME = 5 * 60 * 1000; // 5 minutes
 
 export async function fetchWithCache({
   key,

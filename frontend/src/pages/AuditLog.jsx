@@ -1,11 +1,20 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+/**
+ * Audit Log Page
+ *
+ * Displays assessment activity history with:
+ * - Date range filtering
+ * - Risk level filtering
+ * - Search by patient name
+ * - Grouped entries by date
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import api from "../api/axios";
 import { normalizePatients } from "../utils/normalizePatients";
 import { fetchWithCache } from "../api/cachedFetch";
 
-/* ─── Date helpers ────────────────────────────────────────────── */
+// ─── Date helpers ──────────────────────────────────────────────
 function ymd(d) {
   // Returns "YYYY-MM-DD" for a Date object
   return d.toISOString().slice(0, 10);
@@ -385,53 +394,60 @@ export default function AuditLog() {
   const [toDate, setToDate] = useState("");
   const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await api.get("/patients");
-        const patients = normalizePatients(res);
-        const pMap = {};
-        patients?.forEach((p) => { pMap[p.patient_id] = p; });
-        setPatientMap(pMap);
+  const load = useCallback(async () => {
+    try {
+      const isDev = import.meta.env.DEV;
+      
+      const res = await api.get("/patients");
+      if (isDev) console.log("[AuditLog] Patients response:", res.data);
+      const patients = normalizePatients(res);
+      if (isDev) console.log("[AuditLog] Normalized patients:", patients.length);
+      const pMap = {};
+      patients?.forEach((p) => { pMap[p.patient_id] = p; });
+      setPatientMap(pMap);
 
-        const { data: assessmentResponse } = await fetchWithCache({
-          key: ["assessments", "all"],
-          fetcher: async () => {
-            const res = await api.get("/api/v1/predictive-analysis/risk-assessment/all?limit=1000");
-            return res.data;
-          },
-        });
+      const { data: assessmentResponse } = await fetchWithCache({
+        key: ["assessments", "all"],
+        fetcher: async () => {
+          const res = await api.get("/api/v1/predictive-analysis/risk-assessment/all?limit=1000");
+          return res.data;
+        },
+      });
 
-        const allRows = (Array.isArray(assessmentResponse?.data) ? assessmentResponse.data : [])
-          .map((a) => {
-            const p = pMap[a.patient_id];
-            return {
-              logId: a._id || `${a.patient_id}-${a.timestamp || a.createdAt}`,
-              patientId: a.patient_id,
-              patientName: p?.name || a.patient_id,
-              action: "Assessment completed",
-              performedBy: a.performed_by || "System",
-              timestamp: a.timestamp || a.createdAt,
-              riskLevel: a.risk_level || "N/A",
-              score: typeof a.risk_score === "number" ? a.risk_score : null,
-            };
-          })
-          .filter(Boolean);
+      if (isDev) console.log("[AuditLog] Assessments response:", assessmentResponse);
+      const allRows = (Array.isArray(assessmentResponse?.data) ? assessmentResponse.data : [])
+        .map((a) => {
+          const p = pMap[a.patient_id];
+          return {
+            logId: a._id || `${a.patient_id}-${a.timestamp || a.createdAt}`,
+            patientId: a.patient_id,
+            patientName: p?.name || a.patient_id,
+            action: "Assessment completed",
+            performedBy: a.performed_by || "System",
+            timestamp: a.timestamp || a.createdAt,
+            riskLevel: a.risk_level || "N/A",
+            riskScore: typeof a.risk_score === "number" ? a.risk_score : null,
+          };
+        })
+        .filter(Boolean);
 
-        allRows.sort((a, b) => {
-          const dateA = a.timestamp ? new Date(a.timestamp) : new Date(0);
-          const dateB = b.timestamp ? new Date(b.timestamp) : new Date(0);
-          return dateB - dateA;
-        });
-        setRows(allRows);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
+      if (isDev) console.log("[AuditLog] Total rows before sort:", allRows.length);
+      allRows.sort((a, b) => {
+        const dateA = a.timestamp ? new Date(a.timestamp) : new Date(0);
+        const dateB = b.timestamp ? new Date(b.timestamp) : new Date(0);
+        return dateB - dateA;
+      });
+      if (isDev) console.log("[AuditLog] Final rows after sort:", allRows.length);
+      setRows(allRows);
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("[AuditLog] Load error:", err.response?.status, err.message);
+      // Silently ignore; UI shows empty state
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -536,6 +552,19 @@ export default function AuditLog() {
         <section style={styles.listWrap}>
           {loading ? (
             <div style={styles.empty}>Loading activity history…</div>
+          ) : rows.length === 0 ? (
+            <div style={styles.empty}>
+              <div style={{ width: "32px", height: "32px", margin: "0 auto 12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#0d9488" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="9" y="2" width="6" height="4" rx="1" />
+                  <path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3" />
+                  <path d="M7 13h10" />
+                  <path d="M7 17h7" />
+                </svg>
+              </div>
+              <div style={{ fontSize: "14px", fontWeight: "600", marginBottom: "4px" }}>No activity yet</div>
+              <div style={{ fontSize: "12px", color: "#94a3b8" }}>Assessments will appear here as they are completed</div>
+            </div>
           ) : grouped.length === 0 ? (
             <div style={styles.empty}>No log entries match the selected filters.</div>
           ) : (
@@ -561,7 +590,7 @@ export default function AuditLog() {
 }
 
 /* ─── Log Entry Card ──────────────────────────────────────────── */
-function LogEntry({ entry, onOpen }) {
+const LogEntry = React.memo(function LogEntry({ entry, onOpen }) {
   const [hovered, setHovered] = useState(false);
   const initial = (entry.patientName || "U").charAt(0).toUpperCase();
 
@@ -591,7 +620,7 @@ function LogEntry({ entry, onOpen }) {
         {entry.riskLevel && entry.riskLevel !== "N/A" ? (
           <>
             <span style={riskPill(entry.riskLevel)}>{entry.riskLevel}</span>
-            {entry.score !== null && <span style={styles.cardScore}>{entry.score}/100</span>}
+            <span style={styles.cardScore}>{entry.riskScore ?? "--"}/100</span>
           </>
         ) : (
           <span style={styles.noResult}>Not Assessed</span>
@@ -605,14 +634,14 @@ function LogEntry({ entry, onOpen }) {
       </div>
     </div>
   );
-}
+});
 
 /* ─── Styles ──────────────────────────────────────────────────── */
 const styles = {
-  layout: { display: "flex", height: "100vh", overflow: "hidden" },
+  layout: { display: "flex", minHeight: "100vh" },
   main: {
     flex: 1, display: "flex", flexDirection: "column", gap: "14px",
-    padding: "20px 24px", background: "#f8fafc", minWidth: 0, overflowY: "auto",
+    padding: "20px 28px", background: "#f8fafc", minWidth: 0,
   },
 
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexShrink: 0 },

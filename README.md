@@ -1,91 +1,172 @@
-# PULSE PROPHET - System Audit and Implementation Plan
+# Pulse Prophet — Predictive Analysis Subsystem
 
 ## Overview
 
-This repository contains the results of a comprehensive audit of the PULSE PROPHET healthcare Predictive Analysis System, along with a detailed implementation plan to address the identified issues.
+Pulse Prophet is a production-grade healthcare Predictive Analysis System integrated with a Patient Management System (PMS). It performs rule-based risk scoring, patient assessment, recommendation generation, and specialist/lab-test suggestions.
 
-## Background
+## Tech Stack
 
-PULSE PROPHET is a production-grade healthcare Predictive Analysis System integrated with a Patient Management System (PMS). The system is designed to:
+- **Frontend**: React 18 + Vite + React Router DOM + Axios
+- **Backend**: Node.js + Express + MongoDB (Mongoose)
+- **Auth**: JWT (jsonwebtoken) + bcryptjs
+- **Security**: Helmet, express-rate-limit, express-validator
+- **Integration**: Admin Subsystem bridge, PMS external API
 
-- Retrieve PMS patient data
-- Analyze patient risk factors
-- Compute predictive risk score
-- Classify risk level
-- Generate recommendations
-- Suggest specialists
-- Suggest optional laboratory tests
-- Provide assessment transparency
-- Persist assessment history
-- Render assessment results only after explicit generation
+## Quick Start
 
-## Audit Scope
+### Prerequisites
+- Node.js 18+
+- MongoDB Atlas cluster (or local MongoDB)
 
-The audit covered the entire system, including:
+### Environment Setup
 
-- Frontend components and pages
-- Backend routes and services
-- API integration
-- State management
-- Data persistence
-- UI/UX
-- Performance optimization
+1. Copy `.env.example` to `.env` in the project root.
+2. Fill in real values for all variables.
 
-## Documentation
+```bash
+# Backend
+cd backend
+npm install
+npm run dev        # or npm start for production
 
-The following documents provide detailed information about the audit findings and implementation plan:
+# Frontend (new terminal)
+cd frontend
+npm install
+npm run dev
+```
 
-1. [Executive Summary](executive_summary.md): A high-level overview of the audit findings and implementation strategy.
+### Default Admin Credentials (Auto-seeded)
+When the server starts and no admin exists, a default admin is created:
+- **Username**: `admin`
+- **Password**: `Admin@1234`
+- **Email**: `admin@pulseprophet.local`
 
-2. [Audit Findings](audit_findings.md): Detailed findings from the audit, including root causes and proposed solutions.
+## Project Structure
 
-3. [Implementation Plan](implementation_plan.md): A detailed plan for implementing the fixes, organized by priority and with specific tasks for each issue.
+```
+ pulse/
+ ├── .env                     # Single source of truth for env vars
+ ├── backend/
+ │   ├── config/              # DB connection, env loader
+ │   ├── controllers/         # Auth, admin, patient, assessment controllers
+ │   ├── middleware/          # Auth, rate limiting, validation, error handling
+ │   ├── models/              # User, Assessment schemas
+ │   ├── routes/              # Express route definitions
+ │   ├── services/            # Scoring, PMS integration, audit, admin bridge
+ │   ├── utils/               # Helpers, validation, seed utilities
+ │   └── server.js            # Entry point
+ └── frontend/
+     ├── src/
+     │   ├── api/             # Axios client + request caching
+     │   ├── components/      # Reusable UI components
+     │   ├── context/         # AuthContext, ThemeContext
+     │   ├── pages/           # Route-level pages
+     │   └── utils/           # Normalization, password validation
+     └── index.html
+```
 
-4. [Sample Implementation](sample_implementation.md): A sample implementation for one of the critical issues (Audit Log bug) to demonstrate how the fixes would be implemented.
+## Authentication
 
-## Key Issues
+### Supported Login Methods
+- **Email** (e.g., `user@example.com`)
+- **Username** (e.g., `johndoe`)
+- **Predictive subsystem admin** (`predictive_admin` via Admin Subsystem bridge)
 
-The audit identified several critical issues that need to be addressed:
+### Auth Flow
+1. Frontend sends `{ identifier, password }` to `POST /auth/login`
+2. Backend resolves user by email OR username
+3. `bcrypt.compare()` validates the password
+4. JWT token is generated (expires in 7 days)
+5. Token is stored in `localStorage` (`pp_token`)
+6. Axios interceptors attach the Bearer token to every request
 
-1. **Scoring System Inconsistency**: Two different scoring implementations exist, creating confusion and potential for inconsistency.
+### Password Policy
+- Minimum 8 characters
+- At least one uppercase letter
+- At least one lowercase letter
+- At least one number
+- At least one special character
+- Blacklisted common passwords are rejected
 
-2. **Patient Registry Card Issues**: Patient registry cards are missing required elements and don't follow the specified behavior for assessed and unassessed patients.
+### Security Features
+- Rate limiting on auth endpoints (5 login attempts per 15 min)
+- Helmet security headers
+- Input sanitization and trimming
+- NoSQL injection prevention via Mongoose schema validation
+- Dev bypass requires explicit `AUTH_DEV_BYPASS=true`
+- Passwords hashed with bcrypt (cost factor 12)
 
-3. **Broken Assessment Flow**: The assessment flow is broken, leading to visual issues and incorrect rendering when running an assessment.
+## API Response Format
 
-4. **Audit Log Bug**: The Audit Log doesn't display any assessments due to an incorrect API endpoint path.
+All endpoints now return a consistent envelope:
 
-5. **Performance Issues**: The system has performance issues related to inefficient caching and repeated API calls.
+**Success**
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "token": "...",
+  "user": { ... }
+}
+```
 
-6. **Assessment Transparency**: Assessments don't provide full explainability for the risk score.
+**Error**
+```json
+{
+  "success": false,
+  "message": "Invalid username/email or password"
+}
+```
 
-7. **Recommendation System**: Recommendations are too weak and not dynamically adapted based on patient data.
+## Recent Changes
 
-8. **API Response Consistency**: Frontend parsing logic is inconsistent, leading to potential errors.
+### Medical Taxonomy & Scoring Engine Refactoring (Latest)
+- Created centralized medical taxonomy (`backend/constants/clinicalTags.js`) with 100+ medically validated conditions
+- Added Filipino/common Philippine health risk support with aliases (e.g., "highblood" → Hypertension)
+- Implemented new scoring engine (`backend/utils/scoringEngine.js`) with fine-grained weighted scoring
+- Added medical normalization helpers (`backend/utils/medicalNormalization.js`) to reject junk/free-text terms
+- Replaced old category-based scoring with per-condition weights from taxonomy
+- Added intelligent risk escalation rules for dangerous condition combinations (e.g., HTN + DM + Smoking)
+- Created frontend medical taxonomy mirror (`frontend/src/utils/medicalTaxonomy.js`) for UI consistency
+- Updated condition extraction to use new taxonomy and only show validated medical tags
+- Added comprehensive documentation in `information.txt` with scoring tables and risk escalation logic
+- Updated `backend/services/scoring.js` to delegate to new scoringEngine (backward compatible)
+- Updated `backend/controllers/assessmentController.js` with consistent success flags in all responses
 
-9. **PMS Fetch Requirements**: The system has limitations on fetching PMS data, including a 20-patient limitation and incomplete pagination handling.
+### Authentication Audit & Fixes
+- Fixed 400 Bad Request on `/auth/login` caused by inconsistent login payload fields
+- Fixed frontend login to always send `identifier` (supports both email and username)
+- Backend login validators now accept `identifier`, `email`, or `username`
+- Added `success: true/false` flag to all auth and admin API responses
+- Added default admin seeding on startup if no admin exists
+- Added Helmet for security headers
+- Added safe development-only logging (no passwords or secrets logged)
+- Fixed favicon 404 with inline SVG favicon
+- Centralized error handling that never leaks stack traces or Mongo internals
+- Hardened auth middleware dev bypass
 
-10. **Dashboard Issues**: Dashboard statistics don't accurately reflect real assessments.
+### Previous Refactors
+- Backend MVC refactor (controllers extracted from routes)
+- Centralized environment variable loader (`backend/config/env.js`)
+- Username migration for legacy accounts
+- Audit logging integration with Admin Subsystem
+- Password strength validation on registration and password changes
 
-## Implementation Strategy
+## Troubleshooting
 
-The implementation plan is organized into five phases:
+**Login shows "Authentication failed"**
+- Check that the backend server is running and reachable (`VITE_API_URL`)
+- Verify MongoDB connection in backend logs
+- Ensure the admin was seeded (check backend startup logs)
+- Check browser DevTools Network tab for exact error message
 
-1. **Critical Backend Fixes**: Standardize the scoring system, expand the recommendation system, and update the PMS service.
+**CORS errors**
+- Set `CORS_ORIGIN` to your exact frontend URL (e.g., `http://localhost:5173`)
 
-2. **Critical Frontend Fixes**: Fix the assessment flow, audit log, and patient registry cards.
+**MongoDB connection fails**
+- Verify `MONGODB_URI` is correct
+- Ensure your IP is whitelisted in MongoDB Atlas
 
-3. **Performance Optimization**: Implement consistent caching and optimize API response handling.
+## License
 
-4. **UI/UX Improvements**: Enhance assessment transparency, improve the dashboard, and implement disclaimers.
-
-5. **Verification and Testing**: Conduct end-to-end verification, test edge cases, and perform a final review.
-
-## Next Steps
-
-1. Review the audit findings and implementation plan.
-2. Prioritize the issues based on business impact and technical dependencies.
-3. Begin implementation with the critical backend fixes.
-4. Conduct regular verification to ensure the fixes are working as expected.
-5. Complete all phases of the implementation plan.
-6. Perform a final review to ensure all requirements are met.
+Proprietary — Pulse Prophet Healthcare Systems

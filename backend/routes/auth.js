@@ -1,128 +1,40 @@
+/**
+ * Authentication Routes
+ *
+ * Routes for authentication endpoints.
+ * Business logic is handled by authController.
+ *
+ * Endpoints:
+ * - POST /auth/register - Register a new user
+ * - POST /auth/login - Login (local or Predictive subsystem admin)
+ * - GET /auth/me - Get current user session
+ * - PATCH /auth/me - Update own profile
+ * - POST /auth/change-password - Change password
+ */
+
 const express = require("express");
 const router = express.Router();
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
-const User = require("../models/User");
 const { protect } = require("../middleware/auth");
-const { resolvePatientLink } = require("../services/patientLinkingService");
+const {
+  register,
+  login,
+  getMe,
+  updateProfile,
+  changePassword,
+} = require("../controllers/authController");
+const {
+  sanitizeBody,
+  normalizeAuthFields,
+  registerValidators,
+  loginValidators,
+  changePasswordValidators,
+} = require("../middleware/validate");
+const { loginLimiter, registerLimiter, passwordChangeLimiter } = require("../middleware/rateLimiter");
 
-const ALLOWED_ROLES = new Set(["patient", "admin"]);
-
-const generateToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "7d" });
-
-const serializeUser = (user) => ({
-  id: user._id,
-  name: user.name,
-  email: user.email,
-  role: user.role,
-  patient_id: user.patient_id,
-  pms_linked_at: user.pms_linked_at || null,
-  pms_matched_by: user.pms_matched_by || null,
-});
-
-router.post("/register", async (req, res) => {
-  try {
-    const { name, email, password, role, patient_id } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
-
-    const exists = await User.findOne({ email: email.toLowerCase().trim() });
-    if (exists) {
-      return res.status(400).json({ message: "Email already registered" });
-    }
-
-    const nextRole = role || "patient";
-    if (!ALLOWED_ROLES.has(nextRole)) {
-      return res.status(400).json({ message: "Invalid role" });
-    }
-
-    const createdUser = await User.create({
-      name: name.trim(),
-      email: email.toLowerCase().trim(),
-      password,
-      role: nextRole,
-      patient_id: null,
-    });
-
-    const linkResult = await resolvePatientLink(createdUser, {
-      persist: true,
-      identifiers: { patient_id },
-      hydrate: false,
-    });
-    const user = linkResult?.user || createdUser;
-
-    res.status(201).json({
-      token: generateToken(user._id),
-      user: serializeUser(user),
-      patientLink: {
-        linked: Boolean(linkResult?.linked),
-        autoLinked: Boolean(linkResult?.autoLinked),
-        linkedPatientId: linkResult?.linkedPatientId || null,
-        multipleMatches: Boolean(linkResult?.multipleMatches),
-        noMatch: Boolean(linkResult?.noMatch),
-        duplicateLink: Boolean(linkResult?.duplicateLink),
-        conflictingData: Boolean(linkResult?.conflictingData),
-      },
-    });
-  } catch (err) {
-    console.error("Register error:", err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-router.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user) {
-      return res.status(401).json({ message: "Invalid email or password" });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ message: "Invalid email or password" });
-    }
-
-    const linkResult = await resolvePatientLink(user, { persist: true, hydrate: false });
-    const authenticatedUser = linkResult?.user || user;
-
-    res.json({
-      token: generateToken(authenticatedUser._id),
-      user: serializeUser(authenticatedUser),
-      patientLink: {
-        linked: Boolean(linkResult?.linked),
-        autoLinked: Boolean(linkResult?.autoLinked),
-        linkedPatientId: linkResult?.linkedPatientId || null,
-        multipleMatches: Boolean(linkResult?.multipleMatches),
-        noMatch: Boolean(linkResult?.noMatch),
-        duplicateLink: Boolean(linkResult?.duplicateLink),
-        conflictingData: Boolean(linkResult?.conflictingData),
-      },
-    });
-  } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-router.get("/me", protect, async (req, res) => {
-  try {
-    // Session restore should stay lightweight; PMS hydration is handled by /patients/me.
-    return res.json({
-      user: serializeUser(req.user),
-    });
-  } catch (err) {
-    console.error("Auth me error:", err);
-    return res.status(500).json({ message: "Failed to restore session" });
-  }
-});
+router.post("/register", registerLimiter, sanitizeBody, normalizeAuthFields, registerValidators, register);
+router.post("/login", loginLimiter, sanitizeBody, normalizeAuthFields, loginValidators, login);
+router.get("/me", protect, getMe);
+router.patch("/me", protect, sanitizeBody, normalizeAuthFields, updateProfile);
+router.post("/change-password", protect, passwordChangeLimiter, sanitizeBody, changePasswordValidators, changePassword);
 
 module.exports = router;
