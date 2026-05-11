@@ -143,6 +143,11 @@ export default function PatientDetail() {
       setAssessment(normalized);
       setHistory([normalized]);
       setCachedQuery(["assessment", id], normalized);
+
+      /**
+       * Admin sync: invalidate cached assessment views used by the admin subsystem
+       * so patient reruns immediately reflect on admin lists/dashboard.
+       */
       invalidateCachedQuery(["patients"]);
       invalidateCachedQuery(["assessments", "latest-by-patient"]);
       invalidateCachedQuery(["assessments", "all"]);

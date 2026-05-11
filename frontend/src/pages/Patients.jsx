@@ -102,6 +102,62 @@ export default function Patients() {
     load();
   }, []);
 
+  // Admin sync: when returning to the patient registry tab, force-refresh latest-by-patient
+  // to avoid stale assessments being shown after a patient reruns an assessment elsewhere.
+  useEffect(() => {
+    if (user?.role !== "admin") return;
+    if (!Array.isArray(patients) || patients.length === 0) return;
+
+    let cancelled = false;
+
+    const reloadLatestByPatient = async () => {
+      try {
+        const { data: latestResponse } = await fetchWithCache({
+          key: ["assessments", "latest-by-patient"],
+          fetcher: async () => {
+            const { data } = await api.get("/api/v1/predictive-analysis/risk-assessment/latest-by-patient");
+            return data;
+          },
+          force: true,
+        });
+
+        const latestByPatient = latestResponse?.data || {};
+        const assessmentEntries = patients
+          .map((patient) => {
+            const normalized = normalizeAssessment(latestByPatient[patient.patient_id]);
+            if (!normalized) return null;
+            setCachedQuery(["assessment", patient.patient_id], normalized);
+            return [patient.patient_id, normalized];
+          })
+          .filter(Boolean);
+
+        if (cancelled) return;
+
+        setAssessments(
+          assessmentEntries.reduce((acc, [patientId, assessment]) => {
+            acc[patientId] = assessment;
+            return acc;
+          }, {})
+        );
+      } catch {
+        // keep current UI state on failure
+      }
+    };
+
+    const onFocus = () => {
+      void reloadLatestByPatient();
+    };
+
+    window.addEventListener("focus", onFocus);
+    // Also refresh immediately when mounted with an existing patients list
+    void reloadLatestByPatient();
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [user?.role, patients]);
+
   const filteredPatients = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) return patients;

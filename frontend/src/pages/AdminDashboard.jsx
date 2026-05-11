@@ -13,19 +13,41 @@
  * - StatCard and ActionCard are extracted to prevent inline object re-creation
  */
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { ClipboardList, FileText, Sparkles, Users } from "lucide-react";
+import {
+  BarChart3,
+  ClipboardList,
+  FileText,
+  ShieldCheck,
+  Stethoscope,
+  Users,
+  UserSquare,
+  ChevronRight,
+  Activity,
+  Sparkles,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
 
-const StatCard = React.memo(function StatCard({ label, value, accent, bg, onClick }) {
+const StatCard = React.memo(function StatCard({ label, value, accent, bg, onClick, Icon }) {
   return (
     <button
-      style={{ ...styles.statCard, background: bg, cursor: onClick ? "pointer" : "default" }}
+      style={{
+        ...styles.statCard,
+        background: bg,
+        cursor: onClick ? "pointer" : "default",
+      }}
       onClick={onClick}
       type="button"
     >
+      <div style={styles.statTop}>
+        <div style={{ ...styles.statIconWrap, borderColor: "rgba(2, 132, 199, 0.18)" }}>
+          <Icon size={22} strokeWidth={2.1} style={{ color: accent }} />
+        </div>
+        <div style={styles.statGloss} />
+      </div>
+
       <p style={{ ...styles.statValue, color: accent }}>{value ?? "—"}</p>
       <p style={styles.statLabel}>{label}</p>
     </button>
@@ -35,14 +57,14 @@ const StatCard = React.memo(function StatCard({ label, value, accent, bg, onClic
 const ActionCard = React.memo(function ActionCard({ icon: Icon, title, desc, onClick, color, bg }) {
   return (
     <button style={styles.actionCard} onClick={onClick} type="button">
-      <div style={{ ...styles.actionIcon, background: bg, color }}>
+      <div style={{ ...styles.actionIcon, background: bg, color, boxShadow: "0 12px 30px rgba(2,132,199,0.10)" }}>
         <Icon size={22} strokeWidth={2.1} />
       </div>
       <div style={styles.actionBody}>
         <p style={{ ...styles.actionTitle, color }}>{title}</p>
         <p style={styles.actionDesc}>{desc}</p>
       </div>
-      <span style={{ color, fontSize: "18px", fontWeight: "700" }}>&#8250;</span>
+      <ChevronRight size={18} strokeWidth={2.2} style={{ color }} />
     </button>
   );
 });
@@ -104,10 +126,22 @@ export default function AdminDashboard() {
           })
           .filter(Boolean);
 
-        allAssessments.sort((a, b) =>
-          new Date(b.timestamp || b.createdAt) - new Date(a.timestamp || a.createdAt)
-        );
-        setRecentAssessments(allAssessments.slice(0, 8));
+        // Deduplicate: keep only the latest assessment per patient (no duplicate patients in feed)
+        const latestByPatient = new Map();
+
+        const getTs = (x) => new Date(x.timestamp || x.createdAt).getTime();
+
+        allAssessments.sort((a, b) => getTs(b) - getTs(a));
+
+        for (const assessment of allAssessments) {
+          const key = String(assessment.patient_id);
+          if (!latestByPatient.has(key)) {
+            latestByPatient.set(key, assessment);
+          }
+        }
+
+        const deduped = Array.from(latestByPatient.values()).sort((a, b) => getTs(b) - getTs(a));
+        setRecentAssessments(deduped.slice(0, 8));
       } catch {
         // Silently ignore; loading state will clear
       } finally {
@@ -126,11 +160,46 @@ export default function AdminDashboard() {
   const statsCards = useMemo(() => {
     if (!stats) return null;
     return [
-      { label: "Total Users", value: stats.totalUsers, accent: "#0284c7", bg: "#e0f2fe", path: "/admin/users" },
-      { label: "Patient Accounts", value: stats.totalPatientUsers, accent: "#7c3aed", bg: "#ede9fe", path: "/admin/users" },
-      { label: "PMS Patients", value: stats.totalPatients, accent: "#0284c7", bg: "#dbeafe", path: "/admin/patients" },
-      { label: "Total Assessments", value: stats.totalAssessments, accent: "#b45309", bg: "#fef3c7", path: "/admin/audit-log" },
-      { label: "Administrators", value: stats.totalAdmins, accent: "#be123c", bg: "#ffe4e6", path: "/admin/users" },
+      {
+        label: "Total Users",
+        value: stats.totalUsers,
+        accent: "#0284c7",
+        bg: "#e0f2fe",
+        path: "/admin/users",
+        Icon: UserSquare,
+      },
+      {
+        label: "Patient Accounts",
+        value: stats.totalPatientUsers,
+        accent: "#7c3aed",
+        bg: "#ede9fe",
+        path: "/admin/users",
+        Icon: Stethoscope,
+      },
+      {
+        label: "PMS Patients",
+        value: stats.totalPatients,
+        accent: "#0284c7",
+        bg: "#dbeafe",
+        path: "/admin/patients",
+        Icon: Stethoscope,
+      },
+      {
+        label: "Total Assessments",
+        value: stats.totalAssessments,
+        accent: "#b45309",
+        bg: "#fef3c7",
+        path: "/admin/audit-log",
+        Icon: BarChart3,
+      },
+      {
+        label: "Administrators",
+        value: stats.totalAdmins,
+        accent: "#be123c",
+        bg: "#ffe4e6",
+        path: "/admin/users",
+        Icon: ShieldCheck,
+      },
     ];
   }, [stats]);
 
@@ -143,16 +212,70 @@ export default function AdminDashboard() {
             <h1 style={styles.title}>Admin Dashboard</h1>
             <p style={styles.subtitle}>System overview and management</p>
           </div>
+
           <div style={styles.welcomeTag}>
-            <Sparkles size={14} style={styles.welcomeIcon} />
-            Welcome, {user?.name?.split(" ")[0]}
+            <div style={styles.welcomeIconWrap}>
+              <Activity size={14} style={styles.welcomeIcon} />
+            </div>
+            <span style={styles.welcomeText}>Welcome, {user?.name?.split(" ")[0]}</span>
           </div>
         </header>
 
         {loading ? (
-          <div style={styles.center}>
-            <div style={styles.spinner} />
-            <p style={styles.loadingText}>Loading system data...</p>
+          <div style={styles.loadingShell}>
+            <section style={styles.statsGrid}>
+              {Array.from({ length: 5 }).map((_, idx) => (
+                <div key={idx} style={{ ...styles.skeletonCard }}>
+                  <div style={styles.skeletonTop} />
+                  <div style={styles.skeletonLineWide} />
+                  <div style={styles.skeletonLine} />
+                </div>
+              ))}
+            </section>
+
+            <div style={styles.twoCol}>
+              <section style={styles.panel}>
+                <div style={styles.panelHeader}>
+                  <div style={styles.skeletonLineShort} />
+                  <div style={styles.skeletonPill} />
+                </div>
+                <div style={styles.listWrap}>
+                  {Array.from({ length: 6 }).map((_, idx) => (
+                    <div key={idx} style={{ ...styles.assessRow, opacity: 0.9 }}>
+                      <div style={{ ...styles.skeletonAvatar }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={styles.skeletonLine} />
+                        <div style={styles.skeletonLineTiny} />
+                      </div>
+                      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <div style={styles.skeletonPill} />
+                        <div style={styles.skeletonLineTiny} />
+                        <div style={styles.skeletonLineTiny} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section style={styles.panel}>
+                <div style={styles.panelHeader}>
+                  <div style={styles.skeletonLineShort} />
+                  <div />
+                </div>
+                <div style={styles.actionsWrap}>
+                  {Array.from({ length: 3 }).map((_, idx) => (
+                    <div key={idx} style={styles.skeletonAction}>
+                      <div style={styles.skeletonIcon} />
+                      <div style={styles.skeletonActionBody}>
+                        <div style={styles.skeletonLineShort} />
+                        <div style={styles.skeletonLineTiny} />
+                      </div>
+                      <div style={styles.skeletonArrow} />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
           </div>
         ) : (
           <>
@@ -165,6 +288,7 @@ export default function AdminDashboard() {
                     value={card.value}
                     accent={card.accent}
                     bg={card.bg}
+                    Icon={card.Icon}
                     onClick={navigateTo(card.path)}
                   />
                 ))}
@@ -179,32 +303,59 @@ export default function AdminDashboard() {
                     View All
                   </button>
                 </div>
+
                 <div style={styles.listWrap}>
                   {recentAssessments.length === 0 ? (
                     <p style={styles.empty}>No assessments found.</p>
                   ) : (
-                    recentAssessments.map((a, i) => (
-                      <div key={i} style={styles.assessRow}>
-                        <div style={styles.assessLeft}>
-                          <div style={styles.initialPill}>
-                            {(a.patientName || "U").charAt(0).toUpperCase()}
+                    recentAssessments.map((a, i) => {
+                      const patientId = a.patient_id ?? a.patientId ?? a.patientID;
+                      const onOpen = () => {
+                        if (!patientId) return;
+                        // eslint-disable-next-line no-console
+                        console.debug("[AdminDashboard] Open patient", { patientId });
+                        navigate(`/admin/patients/${patientId}`);
+                      };
+
+                      return (
+                        <div
+                          key={i}
+                          style={styles.assessRow}
+                          role="button"
+                          tabIndex={0}
+                          onClick={onOpen}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") onOpen();
+                            if (e.key === " ") {
+                              e.preventDefault();
+                              onOpen();
+                            }
+                          }}
+                          aria-label={`Open patient details for ${a.patientName || patientId}`}
+                        >
+                          <div style={styles.assessLeft}>
+                            <div style={styles.initialPill}>
+                              {(a.patientName || "U").charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <p style={styles.assessName}>{a.patientName || patientId}</p>
+                              <p style={styles.assessId}>{patientId}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p style={styles.assessName}>{a.patientName || a.patient_id}</p>
-                            <p style={styles.assessId}>{a.patient_id}</p>
+
+                          <div style={styles.assessRight}>
+                            <span style={statusPill(a.risk_level)}>{a.risk_level || "N/A"}</span>
+                            <span style={styles.assessScore}>{a.risk_score ?? "--"}/100</span>
+                            <span style={styles.assessDate}>
+                              {new Date(a.timestamp || a.createdAt).toLocaleDateString("en-PH", {
+                                month: "short",
+                                day: "numeric",
+                              })}
+                            </span>
                           </div>
                         </div>
-                        <div style={styles.assessRight}>
-                          <span style={statusPill(a.risk_level)}>{a.risk_level || "N/A"}</span>
-                          <span style={styles.assessScore}>{a.risk_score ?? "--"}/100</span>
-                          <span style={styles.assessDate}>
-                            {new Date(a.timestamp || a.createdAt).toLocaleDateString("en-PH", {
-                              month: "short", day: "numeric",
-                            })}
-                          </span>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </section>
@@ -213,6 +364,7 @@ export default function AdminDashboard() {
                 <div style={styles.panelHeader}>
                   <h2 style={styles.panelTitle}>Quick Actions</h2>
                 </div>
+
                 <div style={styles.actionsWrap}>
                   <ActionCard
                     icon={Users}
@@ -260,28 +412,93 @@ const styles = {
   spinner: { width: "32px", height: "32px", border: "3px solid #e2e8f0", borderTopColor: "#0ea5e9", borderRadius: "50%", animation: "spin 0.8s linear infinite" },
   loadingText: { marginTop: "12px", fontSize: "14px", color: "var(--text-muted)" },
   statsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "14px", marginBottom: "24px" },
-  statCard: { border: "none", borderRadius: "12px", padding: "16px", textAlign: "left", transition: "transform 0.15s ease, box-shadow 0.15s ease" },
-  statValue: { fontSize: "24px", fontWeight: 700, margin: 0, lineHeight: 1.2 },
-  statLabel: { fontSize: "12px", color: "var(--text-muted)", margin: "4px 0 0", fontWeight: 500 },
+  statCard: {
+    border: "none",
+    borderRadius: "16px",
+    padding: "16px",
+    textAlign: "left",
+    transition: "transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease",
+    boxShadow: "0 10px 30px rgba(2,132,199,0.06)",
+    position: "relative",
+    overflow: "hidden",
+  },
+  statTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "6px" },
+  statIconWrap: {
+    width: "40px",
+    height: "40px",
+    borderRadius: "12px",
+    border: "1px solid rgba(2,132,199,0.18)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "rgba(255,255,255,0.55)",
+    backdropFilter: "blur(8px)",
+  },
+  statGloss: {
+    position: "absolute",
+    right: "-20px",
+    top: "-20px",
+    width: "80px",
+    height: "80px",
+    borderRadius: "999px",
+    background: "radial-gradient(circle at center, rgba(14,165,233,0.18), rgba(14,165,233,0))",
+    pointerEvents: "none",
+  },
+  statValue: { fontSize: "24px", fontWeight: 800, margin: 0, lineHeight: 1.2 },
+  statLabel: { fontSize: "12px", color: "var(--text-muted)", margin: "6px 0 0", fontWeight: 600 },
   twoCol: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" },
-  panel: { background: "var(--bg-surface)", borderRadius: "12px", border: "1px solid var(--border-color)", padding: "18px" },
+  panel: { background: "var(--bg-surface)", borderRadius: "16px", border: "1px solid var(--border-color)", padding: "18px", boxShadow: "0 10px 30px rgba(0,0,0,0.03)" },
   panelHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" },
-  panelTitle: { fontSize: "15px", fontWeight: 700, color: "var(--text-main)", margin: 0 },
-  panelLink: { fontSize: "12px", fontWeight: 600, color: "#0ea5e9", background: "none", border: "none", cursor: "pointer" },
+  panelTitle: { fontSize: "15px", fontWeight: 800, color: "var(--text-main)", margin: 0 },
+  panelLink: { fontSize: "12px", fontWeight: 700, color: "#0ea5e9", background: "none", border: "none", cursor: "pointer" },
   listWrap: { display: "flex", flexDirection: "column", gap: "10px" },
   empty: { fontSize: "13px", color: "var(--text-muted)", textAlign: "center", padding: "20px 0" },
-  assessRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "10px", background: "var(--bg-main)", border: "1px solid var(--border-color)" },
+  assessRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "12px 12px",
+    borderRadius: "12px",
+    background: "var(--bg-main)",
+    border: "1px solid var(--border-color)",
+    transition: "transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease",
+    cursor: "pointer",
+    userSelect: "none",
+  },
   assessLeft: { display: "flex", alignItems: "center", gap: "10px" },
-  initialPill: { width: "32px", height: "32px", borderRadius: "50%", background: "linear-gradient(135deg, #0ea5e9, #0d9488)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 700 },
-  assessName: { fontSize: "13px", fontWeight: 600, color: "var(--text-main)", margin: 0 },
+  initialPill: {
+    width: "34px",
+    height: "34px",
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #0ea5e9, #0d9488)",
+    color: "#fff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "12px",
+    fontWeight: 800,
+  },
+  assessName: { fontSize: "13px", fontWeight: 700, color: "var(--text-main)", margin: 0 },
   assessId: { fontSize: "11px", color: "var(--text-muted)", margin: "2px 0 0" },
   assessRight: { display: "flex", alignItems: "center", gap: "10px" },
-  assessScore: { fontSize: "12px", fontWeight: 700, color: "var(--text-main)" },
+  assessScore: { fontSize: "12px", fontWeight: 900, color: "var(--text-main)" },
   assessDate: { fontSize: "11px", color: "var(--text-muted)" },
   actionsWrap: { display: "flex", flexDirection: "column", gap: "10px" },
-  actionCard: { display: "flex", alignItems: "center", gap: "12px", padding: "12px", borderRadius: "10px", background: "var(--bg-main)", border: "1px solid var(--border-color)", cursor: "pointer", textAlign: "left" },
-  actionIcon: { width: "36px", height: "36px", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center" },
+  actionCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "12px",
+    borderRadius: "12px",
+    background: "var(--bg-main)",
+    border: "1px solid var(--border-color)",
+    cursor: "pointer",
+    textAlign: "left",
+    transition: "transform 0.12s ease, box-shadow 0.12s ease",
+    boxShadow: "0 12px 30px rgba(2,132,199,0.05)",
+  },
+  actionIcon: { width: "40px", height: "40px", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center" },
   actionBody: { flex: 1 },
-  actionTitle: { fontSize: "13px", fontWeight: 700, margin: 0 },
+  actionTitle: { fontSize: "13px", fontWeight: 800, margin: 0 },
   actionDesc: { fontSize: "11px", color: "var(--text-muted)", margin: "2px 0 0" },
 };

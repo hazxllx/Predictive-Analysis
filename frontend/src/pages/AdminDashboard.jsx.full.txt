@@ -1,0 +1,330 @@
+﻿/**
+ * Admin Dashboard Page
+ *
+ * Overview of system health for administrators:
+ * - Stats cards (users, patients, assessments)
+ * - Recent patient list with risk levels
+ * - Latest assessments with quick navigation
+ *
+ * Performance optimizations:
+ * - useMemo for all derived data (patientMap, enriched assessments)
+ * - useCallback for event handlers passed to child components
+ * - Single useEffect with Promise.all for parallel data fetching
+ * - StatCard and ActionCard are extracted to prevent inline object re-creation
+ */
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { ClipboardList, FileText, Sparkles, Users } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import Sidebar from "../components/Sidebar";
+import { useAuth } from "../context/AuthContext";
+import api from "../api/axios";
+import { fetchWithCache } from "../api/cachedFetch";
+
+const StatCard = React.memo(function StatCard({ label, value, accent, bg, onClick, icon }) {
+  return (
+    <button
+      style={{
+        ...styles.statCard,
+        background: bg,
+        cursor: onClick ? "pointer" : "default",
+      }}
+      onClick={onClick}
+      type="button"
+    >
+      <div style={styles.statTop}>
+        <div style={{ ...styles.statIconWrap, borderColor: "rgba(2, 132, 199, 0.18)" }}>
+          <span style={{ ...styles.statIcon, color: accent }}>{icon}</span>
+        </div>
+        <div style={styles.statGloss} />
+      </div>
+
+      <p style={{ ...styles.statValue, color: accent }}>{value ?? "â€”"}</p>
+      <p style={styles.statLabel}>{label}</p>
+    </button>
+  );
+});
+
+const ActionCard = React.memo(function ActionCard({ icon: Icon, title, desc, onClick, color, bg }) {
+  return (
+    <button style={styles.actionCard} onClick={onClick} type="button">
+      <div style={{ ...styles.actionIcon, background: bg, color, boxShadow: "0 10px 25px rgba(14,165,233,0.10)" }}>
+        <Icon size={22} strokeWidth={2.1} />
+      </div>
+      <div style={styles.actionBody}>
+        <p style={{ ...styles.actionTitle, color }}>{title}</p>
+        <p style={styles.actionDesc}>{desc}</p>
+      </div>
+      <span style={{ color, fontSize: "18px", fontWeight: "700" }} aria-hidden="true">
+        &#8250;
+      </span>
+    </button>
+  );
+});
+
+const statusPill = (level) => {
+  const base = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "4px 10px",
+    borderRadius: "999px",
+    fontSize: "11px",
+    fontWeight: 800,
+    border: "1px solid transparent",
+    letterSpacing: "0.02em",
+    lineHeight: 1,
+  };
+  if (level === "Critical")
+    return { ...base, color: "#b91c1c", background: "#fee2e2", borderColor: "#fecaca" };
+  if (level === "High") return { ...base, color: "#9a3412", background: "#ffedd5", borderColor: "#fed7aa" };
+  if (level === "Moderate") return { ...base, color: "#854d0e", background: "#fef9c3", borderColor: "#fde047" };
+  if (level === "Low") return { ...base, color: "#15803d", background: "#dcfce7", borderColor: "#86efac" };
+  return { ...base, color: "#475569", background: "#f1f5f9", borderColor: "#e2e8f0" };
+};
+
+export default function AdminDashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [stats, setStats] = useState(null);
+  const [patients, setPatients] = useState([]);
+  const [recentAssessments, setRecentAssessments] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const [{ data: s }, { data: pList }, { data: assessmentResponse }] = await Promise.all([
+          api.get("/admin/stats"),
+          api.get("/patients"),
+          fetchWithCache({
+            key: ["admin-recent-assessments", 100],
+            force: true,
+            fetcher: async () => {
+              const { data } = await api.get("/api/v1/predictive-analysis/risk-assessment/all?limit=100");
+              return data;
+            },
+          }),
+        ]);
+
+        if (cancelled) return;
+
+        setStats(s.data || s);
+
+        const patientArray = Array.isArray(pList?.data)
+          ? pList.data
+          : Array.isArray(pList)
+          ? pList
+          : [];
+        setPatients(patientArray);
+
+        const patientMap = new Map(patientArray.map((p) => [String(p.patient_id), p]));
+        const allAssessments = (Array.isArray(assessmentResponse?.data) ? assessmentResponse.data : [])
+          .map((assessment) => {
+            const patient = patientMap.get(String(assessment.patient_id));
+            return {
+              ...assessment,
+              patientName: patient?.name || assessment.patient_id,
+            };
+          })
+          .filter(Boolean);
+
+        allAssessments.sort((a, b) =>
+          new Date(b.timestamp || b.createdAt) - new Date(a.timestamp || a.createdAt)
+        );
+        setRecentAssessments(allAssessments.slice(0, 8));
+      } catch {
+        // Silently ignore; loading state will clear
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const navigateTo = useCallback((path) => () => navigate(path), [navigate]);
+
+  const statsCards = useMemo(() => {
+    if (!stats) return null;
+    return [
+      {
+        label: "Total Users",
+        value: stats.totalUsers,
+        accent: "#0284c7",
+        bg: "#e0f2fe",
+        path: "/admin/users",
+        icon: "ðŸ‘¥",
+      },
+      {
+        label: "Patient Accounts",
+        value: stats.totalPatientUsers,
+        accent: "#7c3aed",
+        bg: "#ede9fe",
+        path: "/admin/users",
+        icon: "ðŸ§¾",
+      },
+      {
+        label: "PMS Patients",
+        value: stats.totalPatients,
+        accent: "#0284c7",
+        bg: "#dbeafe",
+        path: "/admin/patients",
+        icon: "ðŸ©º",
+      },
+      {
+        label: "Total Assessments",
+        value: stats.totalAssessments,
+        accent: "#b45309",
+        bg: "#fef3c7",
+        path: "/admin/audit-log",
+        icon: "ðŸ“Š",
+      },
+      {
+        label: "Administrators",
+        value: stats.totalAdmins,
+        accent: "#be123c",
+        bg: "#ffe4e6",
+        path: "/admin/users",
+        icon: "ðŸ›¡ï¸",
+      },
+    ];
+  }, [stats]);
+
+  return (
+    <div style={styles.layout}>
+      <Sidebar />
+      <main style={styles.main}>
+        <header style={styles.header}>
+          <div style={styles.headerLeft}>
+            <div style={styles.titleBlock}>
+              <h1 style={styles.title}>Admin Dashboard</h1>
+              <p style={styles.subtitle}>Healthcare analytics Â· system oversight & management</p>
+            </div>
+
+            <div style={styles.headerMeta}>
+              <span style={styles.metaDot} />
+              <span style={styles.metaText}>Live insights are updated periodically</span>
+            </div>
+          </div>
+
+          <div style={styles.welcomeTag}>
+            <span style={styles.welcomeIconWrap}>
+              <Sparkles size={14} style={styles.welcomeIcon} />
+            </span>
+            <span style={styles.welcomeText}>
+              Welcome, {user?.name?.split(" ")[0]}
+            </span>
+          </div>
+        </header>
+
+        {loading ? (
+          <div style={styles.center}>
+            <div style={styles.spinner} />
+            <p style={styles.loadingText}>Loading system data...</p>
+          </div>
+        ) : (
+          <>
+            {statsCards && (
+              <section style={styles.statsGrid}>
+                {statsCards.map((card) => (
+                  <StatCard
+                    key={card.label}
+                    label={card.label}
+                    value={card.value}
+                    accent={card.accent}
+                    bg={card.bg}
+                    icon={card.icon}
+                    onClick={navigateTo(card.path)}
+                  />
+                ))}
+              </section>
+            )}
+
+            <div style={styles.twoCol}>
+              <section style={styles.panel}>
+                <div style={styles.panelHeader}>
+                  <div style={styles.panelHeaderLeft}>
+                    <h2 style={styles.panelTitle}>Recent Assessments</h2>
+                    <span style={styles.panelHint}>{recentAssessments?.length ?? 0} items</span>
+                  </div>
+                  <button style={styles.panelLink} onClick={navigateTo("/admin/audit-log")}>
+                    View All
+                  </button>
+                </div>
+
+                <div style={styles.listWrap}>
+                  {recentAssessments.length === 0 ? (
+                    <div style={styles.emptyWrap}>
+                      <div style={styles.emptyBadge}>No data</div>
+                      <p style={styles.empty}>No assessments found.</p>
+                    </div>
+                  ) : (
+                    recentAssessments.map((a, i) => (
+                      <button
+                        key={i}
+                        style={styles.assessRow}
+                        type="button"
+                        onClick={navigateTo("/admin/audit-log")}
+                        aria-label={`Open audit log for ${a.patientName || a.patient_id}`}
+                      >
+                        <div style={styles.assessLeft}>
+                          <div style={styles.initialPill}>
+                            {(a.patientName || "U").charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <p style={styles.assessName}>{a.patientName || a.patient_id}</p>
+                            <p style={styles.assessId}>{a.patient_id}</p>
+                          </div>
+                        </div>
+
+                        <div style={styles.assessRight}>
+                          <span style={statusPill(a.risk_level)}>{a.risk_level || "N/A"}</span>
+                          <span style={styles.assessScore}>{a.risk_score ?? "--"}/100</span>
+                          <span style={styles.assessDate}>
+                            {new Date(a.timestamp || a.createdAt).toLocaleDateString("en-PH", {
+                              month: "short",
+                              day: "numeric",
+                            })}
+                          </span>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section style={styles.panel}>
+                <div style={styles.panelHeader}>
+                  <div style={styles.panelHeaderLeft}>
+                    <h2 style={styles.panelTitle}>Quick Actions</h2>
+                  </div>
+                </div>
+                <div style={styles.actionsWrap}>
+                  <ActionCard
+                    icon={Users}
+                    title="Manage Users"
+                    desc="Create, edit, and manage user accounts and roles"
+                    onClick={navigateTo("/admin/users")}
+                    color="#0284c7"
+                    bg="#e0f2fe"
+                  />
+                  <ActionCard
+                    icon={ClipboardList}
+                    title="View Patients"
+                    desc="Browse all patients registered in the system"
+                    onClick={navigateTo("/admin/patients")}
+                    color="#0f766e"
+                    bg="#ccfbf1"
+                  />
+                  <ActionCard
+                    icon={FileText}
+                    title="Audit Log"
+                    desc="Review all assessment events and system activity"
+                    onClick={navigateTo("/admin/audit-log")}
+                    color="#b45309"
+
